@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="bg" cx="0.35" cy="0.3" r="0.9">
+      <stop offset="0" stop-color="#7a2a24"/>
+      <stop offset="0.55" stop-color="#3a1d24"/>
+      <stop offset="1" stop-color="#101c22"/>
+    </radialGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".5"/>
+      <stop offset=".4" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <!-- tile -->
+  <rect x="72" y="72" width="880" height="880" rx="196" fill="url(#bg)"/>
+  <rect x="80" y="80" width="864" height="864" rx="188" fill="none" stroke="#ff8a5c" stroke-opacity=".28" stroke-width="16"/>
+  <!-- back card -->
+  <g transform="rotate(-15 470 560)">
+    <rect x="270" y="260" width="390" height="545" rx="46" fill="#0b1418" opacity=".45" transform="translate(0 24)"/>
+    <rect x="270" y="260" width="390" height="545" rx="46" fill="#c7372d"/>
+    <rect x="300" y="290" width="330" height="485" rx="30" fill="none" stroke="#ff8a7e" stroke-width="14"/>
+    <g fill="#ff8a7e" shape-rendering="crispEdges">
+      <rect x="445" y="470" width="40" height="40"/><rect x="405" y="510" width="40" height="40"/><rect x="485" y="510" width="40" height="40"/><rect x="445" y="550" width="40" height="40"/>
+    </g>
+  </g>
+  <!-- front card -->
+  <g transform="rotate(9 560 560)">
+    <rect x="365" y="245" width="390" height="545" rx="46" fill="#0b1418" opacity=".5" transform="translate(0 30)"/>
+    <rect x="365" y="245" width="390" height="545" rx="46" fill="#f4eee2"/>
+    <rect x="365" y="245" width="390" height="545" rx="46" fill="url(#shine)"/>
+    <rect x="371" y="251" width="378" height="533" rx="40" fill="none" stroke="#d8ccb4" stroke-width="12"/>
+    <!-- pixel arrow, 36px grid -->
+    <g shape-rendering="crispEdges">
+      <g fill="#b85a08" transform="translate(0 18)">
+        <rect x="506" y="345" width="108" height="180"/>
+        <rect x="434" y="525" width="252" height="36"/>
+        <rect x="470" y="561" width="180" height="36"/>
+        <rect x="506" y="597" width="108" height="36"/>
+        <rect x="542" y="633" width="36" height="36"/>
+      </g>
+      <g fill="#ff9a1f">
+        <rect x="506" y="345" width="108" height="180"/>
+        <rect x="434" y="525" width="252" height="36"/>
+        <rect x="470" y="561" width="180" height="36"/>
+        <rect x="506" y="597" width="108" height="36"/>
+        <rect x="542" y="633" width="36" height="36"/>
+      </g>
+      <g fill="#ffd27a">
+        <rect x="506" y="345" width="36" height="180"/>
+        <rect x="434" y="525" width="36" height="36"/>
+      </g>
+      <!-- corner pips -->
+      <g fill="#e2463b">
+        <rect x="404" y="290" width="24" height="24"/><rect x="392" y="314" width="48" height="24"/><rect x="404" y="338" width="24" height="24"/>
+        <rect x="692" y="680" width="24" height="24"/><rect x="680" y="704" width="48" height="24"/><rect x="692" y="728" width="24" height="24"/>
+      </g>
+    </g>
+  </g>
+</svg>

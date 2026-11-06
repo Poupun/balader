@@ -1,0 +1,180 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 20px;
+  line-height: 1.05;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+img {
+  -webkit-user-drag: none;
+}
+
+::selection {
+  background: var(--orange);
+  color: #1a0d00;
+}
+
+:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+/* ---------- layers */
+
+#bg {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 0;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  transition: filter 0.6s var(--ease-out);
+}
+
+body.is-blurred #bg {
+  filter: saturate(0.55) brightness(0.75);
+}
+
+#app {
+  position: relative;
+  z-index: 1;
+  height: 100vh;
+  display: grid;
+  grid-template-columns: 272px minmax(0, 1fr) 300px;
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr);
+  grid-template-areas:
+    'top top top'
+    'hud table pile';
+  gap: 0 var(--gap);
+  padding: 0 var(--gap) var(--gap);
+}
+
+#fx {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 50;
+  pointer-events: none;
+  image-rendering: pixelated;
+}
+
+/* CRT: scanlines, vignette, a breath of flicker. Purely decorative. */
+#crt {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at center, transparent 58%, rgba(0, 0, 0, 0.34) 100%),
+    repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.14) 0, rgba(0, 0, 0, 0.14) 1px, transparent 1px, transparent 3px);
+  animation: crt-flicker 6s steps(60) infinite;
+}
+
+body.no-crt #crt {
+  display: none;
+}
+
+@keyframes crt-flicker {
+  0%, 100% { opacity: 0.9; }
+  48% { opacity: 0.96; }
+  50% { opacity: 0.84; }
+  52% { opacity: 0.95; }
+}
+
+/* CRT power-on at boot */
+body.booting #app {
+  animation: crt-on 0.75s var(--ease-out) both;
+}
+
+@keyframes crt-on {
+  0% { transform: scale(1, 0.004); filter: brightness(4); opacity: 0.2; }
+  35% { transform: scale(1, 0.01); filter: brightness(3); opacity: 1; }
+  60% { transform: scale(1, 1.03); filter: brightness(1.4); }
+  100% { transform: scale(1, 1); filter: none; }
+}
+
+/* Screen shake target */
+#app.shake {
+  animation: screen-shake 0.42s linear both;
+}
+
+@keyframes screen-shake {
+  0% { translate: 0 0; }
+  10% { translate: calc(var(--shake, 6px) * -1) calc(var(--shake, 6px) * 0.5); }
+  25% { translate: var(--shake, 6px) calc(var(--shake, 6px) * -0.4); }
+  40% { translate: calc(var(--shake, 6px) * -0.7) calc(var(--shake, 6px) * 0.3); }
+  60% { translate: calc(var(--shake, 6px) * 0.5) 0; }
+  80% { translate: calc(var(--shake, 6px) * -0.2) calc(var(--shake, 6px) * 0.1); }
+  100% { translate: 0 0; }
+}
+
+/* Reduced motion: keep the fades, drop the bounces. */
+body.reduced *,
+body.reduced *::before,
+body.reduced *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.12s !important;
+}
+
+/* Test mode: everything settled in its final state for deterministic screenshots. */
+body.frozen *,
+body.frozen *::before,
+body.frozen *::after {
+  animation: none !important;
+  transition: none !important;
+  caret-color: transparent !important;
+}
+
+body.frozen #crt {
+  animation: none !important;
+  opacity: 0.9;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------- narrow windows: the pile becomes a drawer */
+@media (max-width: 1100px) {
+  #app {
+    grid-template-columns: 252px minmax(0, 1fr);
+    grid-template-areas:
+      'top top'
+      'hud table';
+  }
+}

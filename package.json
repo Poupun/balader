@@ -1,0 +1,41 @@
+{
+  "name": "balader",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Grab any video or sound, card-table style. Rust (Tauri) + a juicy pixel UI.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "app": "tauri dev",
+    "app:build": "tauri build",
+    "cli": "cargo run -q -p balader-cli --",
+    "serve:real": "cargo run -q -p balader-cli -- serve --token devtoken",
+    "bindings": "cargo test -q -p balader-core export_bindings",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run test:rust && npm run test:unit && npm run test:e2e",
+    "test:rust": "cargo test -q",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test --project=webkit --project=chromium",
+    "test:e2e:real": "cargo build -q -p balader-cli && playwright test --project=real",
+    "test:shots": "playwright test --project=webkit --grep @shots",
+    "test:update": "playwright test --project=webkit --project=chromium --update-snapshots",
+    "bridge": "node scripts/bridge.mjs",
+    "test:prod": "npm run build && playwright test --project=prod"
+  },
+  "dependencies": {
+    "@fontsource/jersey-10": "^5.3.0",
+    "@fontsource/jersey-15": "^5.3.0",
+    "@fontsource/silkscreen": "^5.3.0",
+    "@tauri-apps/api": "^2.12.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "@tauri-apps/cli": "^2.12.4",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
+  }
+}

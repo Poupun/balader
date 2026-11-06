@@ -1,0 +1,4 @@
+# TypeScript bindings generated from the Rust model (ts-rs).
+# Regenerate with: npm run bindings   (runs the ts-rs export tests)
+[env]
+TS_RS_EXPORT_DIR = { value = "src/api/bindings", relative = true }

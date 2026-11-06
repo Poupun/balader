@@ -1,0 +1,70 @@
+/* Balader design tokens. Original palette: warm "ember" table for video,
+   cool "midnight" table for audio, chunky lips under everything you can press. */
+
+@import '@fontsource/jersey-15/400.css';
+@import '@fontsource/jersey-10/400.css';
+@import '@fontsource/silkscreen/400.css';
+@import '@fontsource/silkscreen/700.css';
+
+:root {
+  --font: 'Jersey 15', 'Jersey 10', system-ui, sans-serif;
+  --font-display: 'Jersey 10', 'Jersey 15', system-ui, sans-serif;
+  --font-tag: 'Silkscreen', 'Jersey 15', ui-monospace, monospace;
+
+  --bg: #0b1418;
+  --ink: #081013;
+  --panel-0: #142128;
+  --panel-1: #1b2b33;
+  --panel-2: #243841;
+  --panel-3: #2f4752;
+  --edge: #3f5f6c;
+  --lip: #071014;
+  --text: #f6f1e7;
+  --text-dim: #a2b6be;
+  --text-mute: #6c8590;
+
+  --red: #ff5146;
+  --red-lip: #a3241c;
+  --blue: #2b95ff;
+  --blue-lip: #14569f;
+  --orange: #ff9a1f;
+  --orange-lip: #ad5d09;
+  --green: #33c98a;
+  --green-lip: #187a50;
+  --gold: #ffc93c;
+  --gold-lip: #a37612;
+  --purple: #9b6bff;
+  --purple-lip: #5b36b3;
+  --teal: #2cc4bd;
+  --teal-lip: #137670;
+  --pink: #ff6fa8;
+  --pink-lip: #a8335f;
+  --gray: #8798a1;
+  --gray-lip: #4b5960;
+
+  --card: #f4eee2;
+  --card-2: #e9e1d0;
+  --card-edge: #cbbfa7;
+  --card-ink: #262b31;
+
+  --mode: var(--red);
+  --mode-lip: var(--red-lip);
+
+  --r-panel: 14px;
+  --r-btn: 10px;
+  --r-card: 12px;
+  --lip-h: 5px;
+  --gap: 14px;
+  --topbar-h: 62px;
+
+  --shadow-soft: 0 12px 28px rgba(0, 0, 0, 0.38);
+  --shadow-card: 0 6px 0 rgba(0, 0, 0, 0.22), 0 16px 28px rgba(0, 0, 0, 0.4);
+  --ease-back: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-snap: cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+
+[data-mode='audio'] {
+  --mode: var(--blue);
+  --mode-lip: var(--blue-lip);
+}
