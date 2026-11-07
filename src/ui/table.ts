@@ -6,9 +6,10 @@ import { motion, ms } from '../fx/motion';
 import { pick as pickRandom } from '../fx/rng';
 import { sfx } from '../fx/sound';
 import type { ErrorPayload, ProbeResult } from '../api/types';
-import { deal, fold, pasteAndDeal, selectedCard, setModal, setUrl, store, type AppState } from '../state/app';
+import { activeCut, deal, fold, pasteAndDeal, selectedCard, setModal, setUrl, store, type AppState } from '../state/app';
+import { mountCut, refreshCutBadge, type CutWidget } from './cut';
 import { h, replace } from './dom';
-import { compact, duration, looksLikeUrl, plural, uploadDate } from './format';
+import { clipLength, clock, compact, duration, looksLikeUrl, plural, uploadDate } from './format';
 import { centerOf, fxctx } from './fxctx';
 import { mountHand } from './hand';
 import { icon } from './icons';
@@ -144,7 +145,7 @@ function platformTag(name: string, color: string): HTMLElement {
   return h('span', { class: 'tag platform', style: { '--pc': color } }, name);
 }
 
-function showcase(p: ProbeResult, thumb: string | null, s: AppState): HTMLElement {
+function showcase(p: ProbeResult, thumb: string | null, s: AppState, cut: CutWidget): HTMLElement {
   const canvas = h('canvas', { testid: 'thumb-canvas' });
   let title = '';
   let sub = '';
@@ -180,15 +181,18 @@ function showcase(p: ProbeResult, thumb: string | null, s: AppState): HTMLElemen
   tags.forEach((t, i) => t.style.setProperty('--i', String(i)));
   const titleEl = h('h2', { class: 'showcase__title ink', testid: 'media-title', 'data-tip': title }, '');
   const thumbBox = h('div', { class: 'thumb' }, thumb ? canvas : h('div', { class: 'thumb__ph' }, icon(placeholder)), dur ? h('div', { class: 'thumb__badge' }, dur) : null);
+  const video = p.kind === 'video';
   const el = h(
     'div',
     { class: 'showcase panel', testid: 'showcase', 'data-kind': p.kind },
     thumbBox,
-    h('div', { class: 'showcase__meta' }, titleEl, h('div', { class: 'showcase__sub', testid: 'media-sub' }, sub), h('div', { class: 'showcase__tags' }, tags)),
+    h('div', { class: 'showcase__meta' }, titleEl, h('div', { class: 'showcase__sub', testid: 'media-sub' }, sub), h('div', { class: 'showcase__tags' }, tags, video ? cut.toggle : null)),
+    video ? cut.el : null,
   );
   typeIn(titleEl, title, 140);
   if (thumb) requestAnimationFrame(() => pixelReveal(canvas, thumb));
   void s;
+  if (video) refreshCutBadge(cut);
   return el;
 }
 
@@ -209,6 +213,7 @@ function bust(err: ErrorPayload): HTMLElement {
 }
 
 function mountStage(parent: HTMLElement): HTMLElement {
+  const cut = mountCut();
   const top = h('div', { class: 'stage__top', testid: 'stage-top' });
   const stage = h('div', { class: 'stage', testid: 'stage' }, top);
   parent.appendChild(stage);
@@ -219,7 +224,7 @@ function mountStage(parent: HTMLElement): HTMLElement {
     quipTimer = null;
     stage.classList.toggle('is-empty', s.phase === 'idle' || s.phase === 'probing');
     if (s.phase === 'dealt' && s.probe) {
-      replace(top, showcase(s.probe, s.thumb, s));
+      replace(top, showcase(s.probe, s.thumb, s, cut));
       return;
     }
     if (s.phase === 'error' && s.error) {
@@ -263,7 +268,7 @@ function mountStage(parent: HTMLElement): HTMLElement {
         sfx.play('pop');
       }
     } else if (s.thumb !== prev.thumb && s.thumb && s.phase === 'dealt') {
-      const canvas = top.querySelector('canvas') as HTMLCanvasElement | null;
+      const canvas = top.querySelector('.thumb canvas') as HTMLCanvasElement | null;
       const box = top.querySelector('.thumb');
       if (canvas) pixelReveal(canvas, s.thumb);
       else if (box) {
@@ -281,8 +286,10 @@ function mountStage(parent: HTMLElement): HTMLElement {
 
 function mountActions(parent: HTMLElement, hand: () => HTMLElement | null): void {
   const title = h('b', { testid: 'betslip-title', class: 'ink' });
+  const cutText = h('span');
+  const cutTag = h('span', { class: 'tag tag--gold betslip__cut', testid: 'betslip-cut', hidden: true }, icon('scissors'), cutText);
   const detail = h('span', { testid: 'betslip-detail' });
-  const slip = h('div', { class: 'betslip', testid: 'betslip' }, title, detail);
+  const slip = h('div', { class: 'betslip', testid: 'betslip' }, h('div', { class: 'betslip__top' }, title, cutTag), detail);
   const grabBtn = button([h('span', null, 'GRAB IT!'), h('span', { class: 'kbd' }, '↵')], {
     cls: 'btn--lg btn--grab',
     testid: 'grab',
@@ -310,6 +317,14 @@ function mountActions(parent: HTMLElement, hand: () => HTMLElement | null): void
 
   const sync = (s: AppState) => {
     const c = selectedCard();
+    const clip = c ? activeCut(s) : null;
+    const wasHidden = cutTag.hidden;
+    cutTag.hidden = !clip;
+    if (clip) {
+      cutText.textContent = `${clock(clip.start)}-${clock(clip.end)}`;
+      cutTag.setAttribute('data-tip', `Only ${clipLength(clip.end - clip.start)}, from ${clock(clip.start, 1)} to ${clock(clip.end, 1)}${s.mode === 'audio' ? '' : clip.exact ? '\nExact cut (re-encoded to H.264)' : '\nFast cut (keyframes, original stream)'}`);
+      if (wasHidden) pop(cutTag, 0.3);
+    }
     slip.classList.toggle('is-empty', !c);
     if (c) {
       title.textContent = c.summary;
@@ -328,7 +343,7 @@ function mountActions(parent: HTMLElement, hand: () => HTMLElement | null): void
     setDisabled(foldBtn, s.phase === 'idle');
   };
   store.subscribe((s, prev) => {
-    if (s.selected !== prev.selected || s.cards !== prev.cards || s.phase !== prev.phase) {
+    if (s.selected !== prev.selected || s.cards !== prev.cards || s.phase !== prev.phase || s.cut !== prev.cut || s.mode !== prev.mode) {
       sync(s);
       if (s.selected && s.selected !== prev.selected) pop(title, 0.08);
     }

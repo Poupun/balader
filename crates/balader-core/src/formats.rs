@@ -11,7 +11,7 @@ use regex::Regex;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
-use crate::model::{AudioInfo, AudioTrack, MediaInfo, PlaylistEntry, PlaylistInfo, TierPick, VideoTier};
+use crate::model::{AudioInfo, AudioTrack, MediaInfo, PlaylistEntry, PlaylistInfo, Storyboard, TierPick, VideoTier};
 use crate::platform::platform_for;
 
 // ------------------------------------------------------------ raw json
@@ -92,6 +92,20 @@ pub struct RawFormat {
     pub video_ext: Option<String>,
     #[serde(deserialize_with = "lenient_string")]
     pub audio_ext: Option<String>,
+    // Storyboards (sprite sheets of preview frames).
+    #[serde(deserialize_with = "lenient_f64")]
+    pub rows: Option<f64>,
+    #[serde(deserialize_with = "lenient_f64")]
+    pub columns: Option<f64>,
+    #[serde(deserialize_with = "lenient_vec")]
+    pub fragments: Vec<RawFragment>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct RawFragment {
+    #[serde(deserialize_with = "lenient_string")]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -703,7 +717,33 @@ pub fn media_info(raw: &RawInfo, input_url: &str) -> MediaInfo {
         audio: analysis.audio,
         subtitles,
         format_count: raw.formats.len() as u32,
+        storyboards: storyboards(&raw.formats, raw.duration),
     }
+}
+
+/// YouTube's storyboards (`sb0`…`sb3`): sprite sheets of evenly spaced
+/// frames, smallest first. They feed the cut timeline's filmstrip.
+pub fn storyboards(formats: &[RawFormat], duration: Option<f64>) -> Vec<Storyboard> {
+    let Some(d) = duration.filter(|d| d.is_finite() && *d > 0.0) else { return Vec::new() };
+    let mut out: Vec<Storyboard> = formats
+        .iter()
+        .filter(|f| f.format_note.as_deref().is_some_and(|n| n.eq_ignore_ascii_case("storyboard")) || f.protocol.as_deref() == Some("mhtml"))
+        .filter_map(|f| {
+            let n = |v: Option<f64>| v.filter(|x| x.is_finite() && *x >= 1.0).map(|x| x as u32);
+            let (width, height, columns, rows) = (n(f.width)?, n(f.height)?, n(f.columns)?, n(f.rows)?);
+            let fps = f.fps.filter(|x| x.is_finite() && *x > 0.0)?;
+            let sheets: Vec<String> = f.fragments.iter().filter_map(|fr| fr.url.clone()).filter(|u| u.starts_with("https://") || u.starts_with("http://")).collect();
+            if sheets.is_empty() || columns * rows > 400 {
+                return None;
+            }
+            let capacity = columns * rows * sheets.len() as u32;
+            let frames = ((fps * d).round() as u32).clamp(1, capacity);
+            Some(Storyboard { width, height, columns, rows, frames, sheets })
+        })
+        .collect();
+    out.sort_by_key(|s| s.width);
+    out.dedup_by_key(|s| s.width);
+    out
 }
 
 pub fn playlist_info(raw: &RawInfo, input_url: &str) -> PlaylistInfo {
@@ -901,6 +941,30 @@ mod tests {
         let a = analyze_formats(&formats, Some(10.0));
         assert!(a.tiers[0].mp4.silent);
         assert!(!a.audio.available);
+    }
+
+    #[test]
+    fn storyboards_from_youtube_json() {
+        // Shape of yt-dlp's sb formats (Big Buck Bunny, 635 s).
+        let json = r#"{"id":"aqz-KE-bpKQ","title":"BBB","duration":635,"formats":[
+            {"format_id":"sb3","format_note":"storyboard","ext":"mhtml","protocol":"mhtml","acodec":"none","vcodec":"none","width":48,"height":27,"fps":0.15748031496062992,"rows":10,"columns":10,
+             "fragments":[{"url":"https://i.ytimg.com/sb/x/storyboard3_L0/default.jpg?sqp=a","duration":635.0}]},
+            {"format_id":"sb1","format_note":"storyboard","ext":"mhtml","protocol":"mhtml","acodec":"none","vcodec":"none","width":160,"height":90,"fps":0.2015748031496063,"rows":5,"columns":5,
+             "fragments":[{"url":"https://i.ytimg.com/sb/x/storyboard3_L2/M0.jpg","duration":124.0},{"url":"https://i.ytimg.com/sb/x/storyboard3_L2/M1.jpg","duration":124.0},
+                          {"url":"https://i.ytimg.com/sb/x/storyboard3_L2/M2.jpg"},{"url":"https://i.ytimg.com/sb/x/storyboard3_L2/M3.jpg"},{"url":"https://i.ytimg.com/sb/x/storyboard3_L2/M4.jpg"},{"url":"https://i.ytimg.com/sb/x/storyboard3_L2/M5.jpg"}]},
+            {"format_id":"sbX","format_note":"storyboard","width":160,"height":90,"fps":0.2,"rows":5,"columns":5,"fragments":[{"path":"relative.jpg"}]},
+            {"format_id":"18","ext":"mp4","vcodec":"avc1.42001E","acodec":"mp4a.40.2","width":640,"height":360,"fragments":[{"url":"https://x/1"}]}
+        ]}"#;
+        let (info, _) = RawInfo::parse(json).unwrap();
+        let m = media_info(&info, "https://www.youtube.com/watch?v=aqz-KE-bpKQ");
+        assert_eq!(m.storyboards.len(), 2, "relative-only sheets and real formats are skipped");
+        let (small, big) = (&m.storyboards[0], &m.storyboards[1]);
+        assert_eq!((small.width, small.height, small.columns, small.rows, small.frames, small.sheets.len()), (48, 27, 10, 10, 100, 1));
+        assert_eq!((big.width, big.frames, big.sheets.len()), (160, 128, 6));
+        assert!(big.sheets[5].ends_with("M5.jpg"));
+        assert_eq!(m.tiers.len(), 1, "storyboards never become quality cards");
+        // No duration, no storyboard (frame times would be unknown).
+        assert!(storyboards(&info.formats, None).is_empty());
     }
 
     #[test]

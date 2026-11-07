@@ -22,7 +22,8 @@ export type SfxName =
   | 'close'
   | 'shuffle'
   | 'coin'
-  | 'paste';
+  | 'paste'
+  | 'snip';
 
 class Sfx {
   private ctx: AudioContext | null = null;
@@ -167,6 +168,13 @@ class Sfx {
         break;
       case 'shuffle':
         for (let i = 0; i < 6; i++) this.noise(0.035, 3800, 2600, 1.6, 0.09, d + i * 0.045);
+        break;
+      case 'snip':
+        // Two blades closing: metallic scrapes with a bright click each.
+        for (const [at, f] of [[0, 1], [0.075, 1.12]] as const) {
+          this.noise(0.04, 6800 * p * f, 3600 * p * f, 5, 0.16, d + at);
+          this.tone('square', 3200 * p * f, 2100 * p * f, 0.028, 0.03, d + at);
+        }
         break;
     }
   }

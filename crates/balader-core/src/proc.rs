@@ -78,8 +78,16 @@ pub struct Output {
 
 /// Run to completion with a timeout, capturing output (lossy UTF-8).
 pub async fn run(program: &Path, args: &[String], timeout: Duration) -> std::io::Result<Output> {
+    run_with_env(program, args, &[], timeout).await
+}
+
+/// `run`, with extra environment variables for the child.
+pub async fn run_with_env(program: &Path, args: &[String], envs: &[(&str, &Path)], timeout: Duration) -> std::io::Result<Output> {
     let mut cmd = command(program);
     isolate(&mut cmd);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
     cmd.args(args);
     let mut child = cmd.spawn()?;
     let mut stdout = child.stdout.take().expect("piped");

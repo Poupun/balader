@@ -122,9 +122,22 @@ struct DownloadArgs {
     /// Only the first N playlist entries.
     #[arg(long)]
     limit: Option<u32>,
+    /// Cut: start here (83, 1:23, 1:23.5, 1h2m3s…). Default: the beginning.
+    #[arg(long, value_parser = parse_time)]
+    from: Option<f64>,
+    /// Cut: stop here. Default: the end.
+    #[arg(long, value_parser = parse_time)]
+    to: Option<f64>,
+    /// Cut on keyframes, keeping the original streams (faster, may start a bit early).
+    #[arg(long)]
+    fast_cut: bool,
     /// Print the yt-dlp command instead of running it.
     #[arg(long)]
     dry_run: bool,
+}
+
+fn parse_time(s: &str) -> Result<f64, String> {
+    balader_core::cut::parse_timestamp(s).ok_or_else(|| format!("`{s}` isn't a time (try 83, 1:23 or 1:23.5)"))
 }
 
 fn print_json(v: &Value) {
@@ -389,6 +402,8 @@ fn build_request(args: &DownloadArgs, probe: &ProbeResult) -> DownloadRequest {
                     req.audio_id = p.audio_id.clone();
                     req.combined = p.combined;
                     req.silent = p.silent;
+                    req.pick_vcodec = Some(p.vcodec.clone());
+                    req.pick_ext = Some(p.ext.clone());
                     req.expected_video = p.video_size;
                     req.expected_audio = p.audio_size;
                 }
@@ -423,6 +438,16 @@ fn build_request(args: &DownloadArgs, probe: &ProbeResult) -> DownloadRequest {
             }
         }
     }
+    if (args.from.is_some() || args.to.is_some()) && !req.playlist {
+        // No --to: up to the end. yt-dlp needs a real number, so the length
+        // must be known (it is for nearly every site).
+        if let Some(end) = args.to.or(req.duration) {
+            req.cut = Some(balader_core::Cut { start: args.from.unwrap_or(0.0), end, exact: !args.fast_cut });
+        } else {
+            eprintln!("This one's length is unknown: give --to as well.");
+            std::process::exit(2);
+        }
+    }
     req
 }
 
@@ -451,7 +476,10 @@ async fn download(cli: &Cli, core: &Arc<Core>, args: &DownloadArgs) -> Result<Ex
     let job = core.dispatch("start_download", json!({ "request": req })).await?;
     let id = job["id"].as_str().unwrap_or_default().to_string();
     if !cli.json {
-        eprintln!("▶ {}  ({})", job["title"].as_str().unwrap_or(""), job["summary"].as_str().unwrap_or(""));
+        let cut = serde_json::from_value::<balader_core::Cut>(job["cut"].clone())
+            .map(|c| format!(" · cut {} ({})", balader_core::cut::label(&c), if c.exact || req.mode == Mode::Audio { "exact" } else { "fast" }))
+            .unwrap_or_default();
+        eprintln!("▶ {}  ({}{cut})", job["title"].as_str().unwrap_or(""), job["summary"].as_str().unwrap_or(""));
     }
     let tty = std::io::stderr().is_terminal();
     let mut last_line: Option<(String, u32)> = None;

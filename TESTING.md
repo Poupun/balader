@@ -33,6 +33,7 @@ npm run cli -- engine check                    # newest versions on the release 
 npm run cli -- probe <url>                     # tiers, picks, sizes, audio tracks
 npm run cli -- download <url> --tier 720       # real download, live progress
 npm run cli -- download <url> --audio mp3 --quality 192
+npm run cli -- download <url> --from 1:00 --to 1:20.5   # the cut (add --fast-cut for keyframe cuts)
 npm run cli -- download <url> --dry-run        # print the exact yt-dlp command
 npm run cli -- call <command> '<json args>'    # ANY dispatcher command, same JSON as the UI
 npm run cli -- commands                        # list them
@@ -51,19 +52,20 @@ npm run test:unit
 ## 4. End-to-end (Playwright)
 
 ```bash
-npm run test:e2e        # tests/e2e/app.spec.ts on WebKit + Chromium, mock backend
+npm run test:e2e        # app.spec.ts + cut.spec.ts on WebKit + Chromium, mock backend
 npm run test:shots      # tests/e2e/shots.spec.ts → PNGs of every state
 npm run test:e2e:real   # tests/e2e/real.spec.ts: web UI → balader serve → real downloads
 ```
 
 - **Mock backend** (`src/api/mock/`): a deterministic simulator of the Rust core with the same commands, events and job stages. Link keywords pick scenarios: `bot`, `private`, `unsupported`, `live`, `offline`, `ratelimit`, `scrape`, `playlist`/`list=`, `tiktok`, `soundcloud`, `archive.org`, and `fail` (the download dies halfway). URL flags: `?engine=missing`, `?latency=ms`, `?seed=n`, `?timescale=n` (faster simulated time), `?freeze=1` (no animations, stable screenshots), `?history=empty`.
-- **Visual tour**: `test:shots` writes `tests/e2e/.output/shots/*.png`: empty table, dealing mid-animation, video/audio hands, TikTok, SoundCloud, archive, playlist, scraped page, errors, downloads, jackpot, settings, engine room, first run, narrow window.
-- **Real mode**: starts `balader serve` with an isolated home and the shared engine, then runs real probes and downloads from the browser UI, and checks the files on disk (including the regression "grabbing the audio of a saved video never touches the video").
+- **Visual tour**: `test:shots` writes `tests/e2e/.output/shots/*.png`: empty table, dealing mid-animation, video/audio hands, TikTok, SoundCloud, archive, playlist, scraped page, errors, downloads, jackpot, settings, engine room, first run, narrow window, and the cut (timeline, dragging with the frame card, typing, audio, SoundCloud, minimum window size, a cut in the pile).
+- **Real mode**: starts `balader serve` with an isolated home and the shared engine, then runs real probes and downloads from the browser UI, and checks the files on disk (including the regression "grabbing the audio of a saved video never touches the video"), and measures real cuts with the engine's ffprobe (a 3.5 s video clip, a 15 s MP3).
 
 ### Helpers worth knowing (`tests/e2e/helpers.ts`)
 
 - `openApp(page, { timescale, freeze, query })`, `dealUrl(page, url)`, `until(page, s => …)` polls the app snapshot.
-- `clickCard(page, key)` / `hoverCard(page, key)` aim at a point where the card really is on top (cards overlap like a real hand).
+- `clickCard(page, key)` / `hoverCard(page, key)` aim at a point where the card really is on top (cards overlap like a real hand), waiting for the deal to land.
+- The cut's storyboard sheets are painted by the mock on demand (`mock://storyboard/…`): golden-hour frames stamped with their own time, so a test can check that the right frame shows.
 
 ## The in-page test API: `window.__balader`
 

@@ -31,6 +31,13 @@ test('the production bundle runs under the app CSP', async ({ page }) => {
   expect(await page.evaluate(() => document.fonts.check('20px "Jersey 15"'))).toBe(true);
   await dealUrl(page, URLS.youtube);
   await until(page, (s) => s.phase === 'dealt');
+  // The cut: storyboard sheets come in as data URLs and are drawn on canvases.
+  await page.getByTestId('cut-toggle').click();
+  await page.getByTestId('cut-in-later').click();
+  const film = (await page.getByTestId('cut-film').boundingBox())!;
+  await page.mouse.move(film.x + film.width / 2, film.y + film.height / 2);
+  await expect(page.getByTestId('cut-bubble')).toHaveClass(/has-frame/);
+  await until(page, (s) => s.cut.active !== null);
   await page.getByTestId('grab').click();
   await until(page, (s) => s.jobs[0]?.status === 'done', 20_000);
   await page.screenshot({ path: 'tests/e2e/.output/shots/prod-csp.png' });

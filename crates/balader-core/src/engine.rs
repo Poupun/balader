@@ -472,6 +472,26 @@ impl Engine {
         })
     }
 
+    pub fn ffprobe_path(&self) -> Option<PathBuf> {
+        self.resolved().ffprobe
+    }
+
+    /// Certificates for FFmpeg's own HTTPS. Cuts make FFmpeg read the media
+    /// straight from the site, and its OpenSSL doesn't know where the system
+    /// certificates live ("certificate verify failed"), so children get
+    /// `SSL_CERT_FILE`: the bundle yt-dlp ships (certifi), else the system
+    /// PEM file. None when the user already set `SSL_CERT_FILE` themselves.
+    pub fn ca_bundle(&self) -> Option<PathBuf> {
+        if std::env::var_os("SSL_CERT_FILE").is_some() {
+            return None;
+        }
+        let shipped = self.resolved().ytdlp.and_then(|b| b.path.parent().map(|d| d.join("_internal").join("certifi").join("cacert.pem")));
+        shipped
+            .into_iter()
+            .chain(["/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt"].map(PathBuf::from))
+            .find(|p| p.is_file())
+    }
+
     /// Arguments every yt-dlp invocation gets: no user config, our ffmpeg,
     /// our JS runtime, our cache.
     pub fn base_args(&self) -> Vec<String> {

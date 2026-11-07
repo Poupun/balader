@@ -19,10 +19,11 @@ export interface Snapshot {
   container: string;
   audioFormat: string;
   selected: string | null;
+  cut: { on: boolean; start: number; end: number; available: boolean; active: { start: number; end: number; exact: boolean } | null };
   cards: { key: string; big: string; name: string; size: string; summary: string; selected: boolean }[];
   probe: { kind: string; title: string } | null;
   error: { code: string; message: string; hint: string | null } | null;
-  jobs: { id: string; status: string; stage: string; label: string; progress: number; title: string; summary: string; files: string[] }[];
+  jobs: { id: string; status: string; stage: string; label: string; progress: number; title: string; summary: string; cut: { start: number; end: number; exact: boolean } | null; files: string[] }[];
   history: number;
   engine: { ready: boolean; components: { id: string; state: string; version: string | null }[] } | null;
   modal: string | null;
@@ -42,10 +43,11 @@ export function snapshot(): Snapshot {
     container: s.container,
     audioFormat: s.audioFormat,
     selected: s.selected,
+    cut: { ...s.cut, available: app.cutAvailable(s), active: app.activeCut(s) },
     cards: s.cards.map((c) => ({ key: c.key, big: c.big, name: c.name, size: c.size, summary: c.summary, selected: c.key === s.selected })),
     probe: s.probe ? { kind: s.probe.kind, title: probeTitle } : null,
     error: s.error ? { code: s.error.code, message: s.error.message, hint: s.error.hint } : null,
-    jobs: s.jobs.map((j) => ({ id: j.id, status: j.status, stage: j.stage, label: j.stageLabel, progress: Math.round(j.progress * 1000) / 1000, title: j.title, summary: j.summary, files: j.files })),
+    jobs: s.jobs.map((j) => ({ id: j.id, status: j.status, stage: j.stage, label: j.stageLabel, progress: Math.round(j.progress * 1000) / 1000, title: j.title, summary: j.summary, cut: j.cut, files: j.files })),
     history: s.history.length,
     engine: s.engine ? { ready: s.engine.ready, components: s.engine.components.map((c) => ({ id: c.id, state: c.state, version: c.version })) } : null,
     modal: s.modal,

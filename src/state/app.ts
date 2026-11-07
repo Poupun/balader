@@ -8,6 +8,7 @@ import type {
   AudioFormat,
   Container,
   CoreEvent,
+  Cut,
   DownloadRequest,
   EngineStatus,
   ErrorPayload,
@@ -33,6 +34,17 @@ export interface InstallProgress {
   message: string | null;
 }
 
+/** The cut: grab only [start, end] of the dealt video or track. */
+export interface CutState {
+  /** The timeline is open. A cut applies when the range isn't the whole thing. */
+  on: boolean;
+  start: number;
+  end: number;
+}
+
+/** Shortest clip (seconds), same as the core. */
+export const MIN_CUT = 0.1;
+
 export interface AppState {
   ready: boolean;
   backend: BackendKind;
@@ -47,6 +59,7 @@ export interface AppState {
   audioFormat: AudioFormat;
   cards: CardModel[];
   selected: string | null;
+  cut: CutState;
   /** Bumped whenever the hand is (re)dealt: triggers the deal animation. */
   dealSeq: number;
   jobs: JobSnapshot[];
@@ -75,6 +88,7 @@ export const store = createStore<AppState>({
   audioFormat: 'mp3',
   cards: [],
   selected: null,
+  cut: { on: false, start: 0, end: 0 },
   dealSeq: 0,
   jobs: [],
   history: [],
@@ -94,9 +108,32 @@ function sortJobs(jobs: JobSnapshot[]): JobSnapshot[] {
   return [...jobs].sort((a, b) => b.createdAt - a.createdAt);
 }
 
+/** Length of the dealt single video/track, when known. */
+export function mediaDuration(s: AppState = store.get()): number | null {
+  const d = s.probe?.kind === 'video' ? s.probe.media.duration : null;
+  return d && Number.isFinite(d) && d > 0 ? d : null;
+}
+
+/** Only single videos/tracks of known length can be cut (not playlists or scraped files). */
+export function cutAvailable(s: AppState = store.get()): boolean {
+  return s.phase === 'dealt' && s.probe?.kind === 'video' && mediaDuration(s) !== null && (s.mode === 'audio' ? s.probe.media.audio.available : s.probe.media.hasVideo);
+}
+
+/** The cut that goes into the request, or null for the whole thing. */
+export function activeCut(s: AppState = store.get()): Cut | null {
+  const d = mediaDuration(s);
+  if (!s.cut.on || !cutAvailable(s) || d === null) return null;
+  const start = Math.max(0, s.cut.start);
+  const end = Math.min(d, s.cut.end);
+  if (start <= 0.0005 && end >= d - 0.0005) return null;
+  if (end - start < MIN_CUT - 1e-9) return null;
+  return { start, end, exact: s.mode === 'audio' ? true : s.settings?.exactCuts ?? true };
+}
+
 function rebuild(patch: Partial<AppState> = {}): Partial<AppState> {
   const s = { ...store.get(), ...patch };
-  const cards = buildCards(s.probe, s.mode, s.container, s.audioFormat);
+  const c = activeCut(s);
+  const cards = buildCards(s.probe, s.mode, s.container, s.audioFormat, c ? c.end - c.start : null);
   const keep = s.selected && cards.some((c) => c.key === s.selected && !c.disabled) ? s.selected : null;
   return { ...patch, cards, selected: keep };
 }
@@ -191,13 +228,14 @@ export async function deal(input?: string): Promise<boolean> {
     return false;
   }
   const seq = ++probeSeq;
-  store.set({ phase: 'probing', error: null, probe: null, cards: [], selected: null, probeUrl: url, thumb: null });
+  store.set({ phase: 'probing', error: null, probe: null, cards: [], selected: null, probeUrl: url, thumb: null, cut: { on: false, start: 0, end: 0 } });
   try {
     const probe = await api.probe(url);
     if (seq !== probeSeq) return false;
     let mode = store.get().mode;
     if (probe.kind === 'video' && !probe.media.hasVideo) mode = 'audio';
-    const patch = rebuild({ probe, phase: 'dealt', mode, dealSeq: store.get().dealSeq + 1 });
+    const duration = probe.kind === 'video' ? probe.media.duration ?? 0 : 0;
+    const patch = rebuild({ probe, phase: 'dealt', mode, dealSeq: store.get().dealSeq + 1, cut: { on: false, start: 0, end: duration } });
     patch.selected = defaultSelection(patch.cards ?? []);
     store.set(patch);
     void loadThumb(probe);
@@ -237,7 +275,7 @@ export async function pasteAndDeal(): Promise<boolean> {
 
 export function fold(): void {
   probeSeq++;
-  store.set({ phase: 'idle', probe: null, cards: [], selected: null, error: null, url: '', probeUrl: null, thumb: null });
+  store.set({ phase: 'idle', probe: null, cards: [], selected: null, error: null, url: '', probeUrl: null, thumb: null, cut: { on: false, start: 0, end: 0 } });
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -286,6 +324,38 @@ export function select(key: string | null): void {
   store.set({ selected: s.selected === key ? null : key });
 }
 
+// ------------------------------------------------------------ the cut
+
+/** Open (or close) the cut timeline. Opening keeps the last range for this video. */
+export function setCutOpen(on: boolean): void {
+  const s = store.get();
+  if (on && !cutAvailable(s)) return;
+  if (on === s.cut.on) return;
+  store.set(rebuild({ cut: { ...s.cut, on } }));
+}
+
+/** Clamp and store a range (rounded to the millisecond). Returns what was stored. */
+export function setCut(start: number, end: number): CutState {
+  const s = store.get();
+  const d = mediaDuration(s) ?? Math.max(end, start + MIN_CUT);
+  const r = (x: number) => Math.round(x * 1000) / 1000;
+  let a = r(Math.min(Math.max(0, start), d - MIN_CUT));
+  let b = r(Math.max(Math.min(d, end), a + MIN_CUT));
+  if (b > d) {
+    b = r(d);
+    a = r(Math.max(0, b - MIN_CUT));
+  }
+  const cut = { on: s.cut.on, start: a, end: b };
+  if (cut.start !== s.cut.start || cut.end !== s.cut.end) store.set(rebuild({ cut }));
+  return cut;
+}
+
+/** Frame-exact (re-encode) vs keyframe-fast video cuts. Remembered. */
+export function setExactCuts(exactCuts: boolean): void {
+  updateSettings({ exactCuts }, true);
+  store.set(rebuild({}));
+}
+
 export function selectedCard(): CardModel | null {
   const s = store.get();
   return s.cards.find((c) => c.key === s.selected) ?? null;
@@ -307,7 +377,7 @@ export function buildRequest(card: CardModel): DownloadRequest {
   } else if (probe?.kind === 'sniffed') {
     base.title = card.detail.split('/').pop() || card.summary;
   }
-  return { ...base, ...card.request, summary: card.short };
+  return { ...base, ...card.request, summary: card.short, cut: activeCut(s) };
 }
 
 export async function grab(): Promise<JobSnapshot | null> {

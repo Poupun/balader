@@ -8,4 +8,8 @@ export type Settings = { outputDir: string, filename: FilenameStyle, maxConcurre
 /**
  * chrome, firefox, safari, edge, brave, chromium, opera, vivaldi (None = off).
  */
-cookiesBrowser: string | null, embedThumbnail: boolean, embedMetadata: boolean, embedSubs: boolean, subLangs: string, mode: Mode, container: Container, audioFormat: AudioFormat, audioQuality: string, sound: boolean, volume: number, crt: boolean, backgroundMotion: boolean, reducedMotion: boolean, screenShake: boolean, autoUpdate: boolean, };
+cookiesBrowser: string | null, embedThumbnail: boolean, embedMetadata: boolean, embedSubs: boolean, subLangs: string, 
+/**
+ * Cuts are frame-exact (re-encoded) rather than keyframe-fast.
+ */
+exactCuts: boolean, mode: Mode, container: Container, audioFormat: AudioFormat, audioQuality: string, sound: boolean, volume: number, crt: boolean, backgroundMotion: boolean, reducedMotion: boolean, screenShake: boolean, autoUpdate: boolean, };

@@ -10,6 +10,8 @@ Built in **Rust** (Tauri 2) for **macOS and Windows**, with a juicy pixel-art UI
 | --- | --- | --- |
 | ![](docs/screenshots/table-audio.png) | ![](docs/screenshots/jackpot.png) | ![](docs/screenshots/engine-room.png) |
 
+![The cut: IN/OUT handles over a filmstrip of the video's frames, with the frame card above](docs/screenshots/the-cut.png)
+
 ## What it does
 
 - **Any site**: [yt-dlp](https://github.com/yt-dlp/yt-dlp) under the hood (1800+ extractors), plus Balader's own Rust page scraper as a fallback for sites with no extractor (Open Graph tags, `<video>` tags, JSON-LD, raw media URLs).
@@ -17,6 +19,7 @@ Built in **Rust** (Tauri 2) for **macOS and Windows**, with a juicy pixel-art UI
   - **MP4** favours H.264 + AAC (plays in QuickTime, Windows, editors); **MKV** keeps the original AV1/VP9/Opus.
   - Vertical videos (TikTok, Shorts) are labelled by their short side, like `yt-dlp -S res`.
 - **Sound only**: MP3 (V0, 320, 256, 192, 128), M4A or Opus straight from the source tracks (no re-encode), FLAC or WAV.
+- **The cut**: grab only part of a video or track. Drag IN/OUT handles over a filmstrip of the video's own frames (YouTube storyboards), type exact times (`1:23.5`), nudge by a second or a tenth. **Exact** cuts land on the very frame (only the clip is re-encoded, to H.264); **fast** cuts keep the original stream and start on the nearest keyframe. Audio cuts are always exact. Only the clip is downloaded, and the file is named after it: `Title (1m05s-2m30s).mp4`.
 - **Playlists and channels**, with generic quality cards that apply to every item.
 - A download queue (parallel limit), cancel/retry, history, cover art + tags + subtitles embedding, cookies from your browser for sign-in/bot-check videos.
 - **Safe by design**: yt-dlp works in a private staging folder; Balader moves finished files into your folder itself and never overwrites anything (a clash becomes `Title (2).mp4`).

@@ -7,6 +7,7 @@ export type { ComponentState } from './bindings/ComponentState';
 export type { ComponentStatus } from './bindings/ComponentStatus';
 export type { Container } from './bindings/Container';
 export type { CoreEvent } from './bindings/CoreEvent';
+export type { Cut } from './bindings/Cut';
 export type { DownloadRequest } from './bindings/DownloadRequest';
 export type { EngineStatus } from './bindings/EngineStatus';
 export type { ErrorCode } from './bindings/ErrorCode';
@@ -24,6 +25,7 @@ export type { PlaylistInfo } from './bindings/PlaylistInfo';
 export type { ProbeResult } from './bindings/ProbeResult';
 export type { Settings } from './bindings/Settings';
 export type { SniffCandidate } from './bindings/SniffCandidate';
+export type { Storyboard } from './bindings/Storyboard';
 export type { TierPick } from './bindings/TierPick';
 export type { VideoTier } from './bindings/VideoTier';
 
@@ -70,5 +72,6 @@ export function emptyRequest(url: string): DownloadRequest {
     playlistCount: null,
     playlistLimit: null,
     referer: null,
+    cut: null,
   };
 }

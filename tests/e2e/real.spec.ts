@@ -3,7 +3,7 @@
 // Run: npm run test:e2e:real   (builds the CLI first)
 
 import { expect, test, type Page } from '@playwright/test';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -20,6 +20,19 @@ function engineDir(): string {
   if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', id, 'engine');
   if (process.platform === 'win32') return join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), id, 'engine');
   return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), id, 'engine');
+}
+
+/** Length and codecs of a file, from the engine's own ffprobe. */
+function probeFile(file: string): { duration: number; codecs: string[] } {
+  const bin = join(engineDir(), 'ffmpeg', process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+  const out = JSON.parse(execFileSync(bin, ['-v', 'error', '-show_entries', 'format=duration:stream=codec_name', '-of', 'json', file], { encoding: 'utf8' }));
+  return { duration: Number(out.format.duration), codecs: (out.streams as { codec_name: string }[]).map((x) => x.codec_name) };
+}
+
+async function typeTime(page: Page, which: 'in' | 'out', text: string): Promise<void> {
+  await page.getByTestId(`cut-${which}-value`).click();
+  await page.getByTestId(`cut-${which}-input`).fill(text);
+  await page.keyboard.press('Enter');
 }
 
 let server: ChildProcess | null = null;
@@ -127,4 +140,49 @@ test('SoundCloud track: audio-only table, MP3 at 192K', async ({ page }) => {
   const file = job.files[0];
   expect(file).toMatch(/\.mp3$/);
   expect(statSync(file).size).toBeGreaterThan(3_000_000);
+});
+
+test('the cut: an exact clip of a direct video, the length asked for', async ({ page }) => {
+  await open(page);
+  await dealUrl(page, 'https://www.w3schools.com/html/mov_bbb.mp4');
+  const s = await until(page, (s) => s.phase === 'dealt' || s.phase === 'error', 90_000);
+  expect(s.phase, JSON.stringify(s.error)).toBe('dealt');
+  expect(s.cut.available, 'ffprobe gives direct links a length, so they can be cut').toBe(true);
+  // Earlier tests leave the table in AUDIO (a remembered setting).
+  await page.getByTestId('mode-video').click();
+  await until(page, (s) => s.mode === 'video' && s.selected !== null);
+  await page.getByTestId('cut-toggle').click();
+  await typeTime(page, 'in', '2');
+  await typeTime(page, 'out', '5.5');
+  await until(page, (s) => s.cut.active?.start === 2 && s.cut.active?.end === 5.5);
+  await page.getByTestId('grab').click();
+  const mine = (s: { jobs: { cut: { start: number } | null; status: string }[] }) => s.jobs.find((j) => j.cut?.start === 2);
+  const done = await until(page, (s) => ['done', 'error'].includes(mine(s)?.status ?? ''), 120_000);
+  const job = done.jobs.find((j) => j.cut?.start === 2)!;
+  expect(job.status, job.label).toBe('done');
+  expect(job.files[0]).toMatch(/mov_bbb \(2s-5\.5s\)\.mp4$/);
+  const f = probeFile(job.files[0]);
+  expect(Math.abs(f.duration - 3.5), `clip is ${f.duration}s`).toBeLessThan(0.1);
+  expect(f.codecs).toContain('h264');
+});
+
+test('the cut: a SoundCloud track becomes an MP3 of the length asked for', async ({ page }) => {
+  await open(page);
+  await dealUrl(page, 'https://soundcloud.com/forss/flickermood');
+  const s = await until(page, (s) => s.phase === 'dealt' || s.phase === 'error', 90_000);
+  expect(s.phase, JSON.stringify(s.error)).toBe('dealt');
+  await page.getByTestId('cut-toggle').click();
+  await typeTime(page, 'in', '0:30');
+  await typeTime(page, 'out', '0:45');
+  await clickCard(page, 'a-192');
+  await until(page, (s) => s.selected === 'a-192' && s.cut.active?.end === 45);
+  await page.getByTestId('grab').click();
+  const mine = (s: { jobs: { cut: { start: number } | null; status: string }[] }) => s.jobs.find((j) => j.cut?.start === 30);
+  const done = await until(page, (s) => ['done', 'error'].includes(mine(s)?.status ?? ''), 180_000);
+  const job = done.jobs.find((j) => j.cut?.start === 30)!;
+  expect(job.status, job.label).toBe('done');
+  expect(job.files[0]).toMatch(/Flickermood \(30s-45s\)\.mp3$/);
+  const f = probeFile(job.files[0]);
+  expect(Math.abs(f.duration - 15), `clip is ${f.duration}s`).toBeLessThan(0.15);
+  expect(f.codecs).toContain('mp3');
 });

@@ -8,6 +8,7 @@
 //! ```
 
 pub mod core;
+pub mod cut;
 pub mod download;
 pub mod engine;
 pub mod error;

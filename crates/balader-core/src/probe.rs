@@ -95,6 +95,30 @@ async fn fill_direct_size(http: &reqwest::Client, json: &str, r: &mut ProbeResul
     }
 }
 
+/// Direct file links come without a duration either: ffprobe reads it from
+/// the file's header (a fraction of a second), so the timeline can offer a cut.
+async fn fill_direct_duration(engine: &Engine, json: &str, r: &mut ProbeResult) {
+    let ProbeResult::Video { media } = r else { return };
+    if media.duration.is_some() || media.format_count != 1 || !media.has_video && !media.audio.available {
+        return;
+    }
+    let Some(ffprobe) = engine.ffprobe_path() else { return };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return };
+    let f = &v["formats"][0];
+    if !matches!(f["protocol"].as_str().unwrap_or("https"), "http" | "https") {
+        return;
+    }
+    let Some(url) = f["url"].as_str().or(v["url"].as_str()) else { return };
+    let args: Vec<String> = ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", "--", url].map(String::from).to_vec();
+    let ca = engine.ca_bundle();
+    let envs: Vec<(&str, &std::path::Path)> = ca.as_deref().map(|p| ("SSL_CERT_FILE", p)).into_iter().collect();
+    let Ok(out) = proc::run_with_env(&ffprobe, &args, &envs, Duration::from_secs(10)).await else { return };
+    let duration = out.stdout.trim().parse::<f64>().ok().filter(|d| d.is_finite() && *d > 0.0);
+    if let Some(d) = duration {
+        media.duration = Some((d * 1000.0).round() / 1000.0);
+    }
+}
+
 pub async fn probe(engine: &Engine, settings: &Settings, http: &reqwest::Client, input: &str) -> Result<ProbeResult> {
     let url = normalize_url(input)?;
     let ytdlp = engine.ytdlp_path()?;
@@ -110,6 +134,7 @@ pub async fn probe(engine: &Engine, settings: &Settings, http: &reqwest::Client,
         match interpret(json, &url) {
             Ok(mut r) => {
                 fill_direct_size(http, json, &mut r).await;
+                fill_direct_duration(engine, json, &mut r).await;
                 return Ok(r);
             }
             Err(e) if out.success => return Err(e),

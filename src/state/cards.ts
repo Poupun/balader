@@ -1,7 +1,7 @@
 // Probe result + choices → the hand of cards. Pure (unit-tested).
 
 import type { AudioFormat, Container, DownloadRequest, MediaInfo, Mode, PlaylistInfo, ProbeResult, SniffCandidate, TierPick } from '../api/types';
-import { audioClass, audioName, bytes, tierBig, tierClass, tierName } from '../ui/format';
+import { audioClass, audioName, bytes, clipLength, tierBig, tierClass, tierName } from '../ui/format';
 
 export interface Chip {
   text: string;
@@ -34,13 +34,23 @@ const QUICKTIME_OK = new Set(['H.264', 'HEVC']);
 /** When a site doesn't name the codec, the core reports the container instead. */
 const CONTAINER_NAMES = new Set(['MP4', 'MKV', 'WEBM', 'MOV', 'AVI', 'OGV', 'FLV', '3GP', 'TS', 'M4V', 'VIDEO']);
 
-function videoCard(label: number, p: TierPick, container: Container): CardModel {
+/** A clip: its length and the share of the whole it represents. */
+interface Clip {
+  len: number;
+  frac: number;
+}
+
+const part = (n: number | null, clip: Clip | null) => (n !== null && clip ? Math.round(n * clip.frac) : n);
+
+function videoCard(label: number, p: TierPick, container: Container, clip: Clip | null = null): CardModel {
   const fps = p.fps && p.fps > 30 ? p.fps : null;
   const chips: Chip[] = [{ text: p.vcodec }];
   if (fps) chips.push({ text: `${fps}FPS`, hot: true });
   if (p.hdr) chips.push({ text: 'HDR', hot: true });
   if (p.silent) chips.push({ text: 'NO SOUND' });
-  const size = bytes(p.size, !p.sizeExact);
+  // A clip is roughly its share of the full file (exact cuts re-encode, so it's an estimate).
+  const size = bytes(part(p.size, clip), !p.sizeExact || !!clip);
+  const forClip = clip ? ` for the ${clipLength(clip.len)} clip` : '';
   const dims = p.width && p.height ? `${p.width}×${p.height}` : label ? `${label}p` : 'best available';
   const codecs = `${p.vcodec}${p.acodec ? ` + ${p.acodec}` : ''}`;
   const caveat = container === 'mp4' && !QUICKTIME_OK.has(p.vcodec) && p.vcodec !== 'MP4' ? '\nMay not play in QuickTime (try VLC).' : '';
@@ -57,7 +67,7 @@ function videoCard(label: number, p: TierPick, container: Container): CardModel 
     chips,
     size: p.size ? size : '',
     disabled: false,
-    tip: `${dims} · ${codecs}\n${p.size ? size : 'size unknown'} → ${container.toUpperCase()}${caveat}`,
+    tip: `${dims} · ${codecs}\n${p.size ? size : 'size unknown'}${forClip} → ${container.toUpperCase()}${caveat}`,
     summary: CONTAINER_NAMES.has(p.vcodec)
       ? `${label ? `${label}p${fps ?? ''}` : 'Best quality'} → ${container.toUpperCase()}`
       : `${label ? `${label}p${fps ?? ''}` : 'Best'} · ${p.vcodec} → ${container.toUpperCase()}`,
@@ -73,8 +83,8 @@ function videoCard(label: number, p: TierPick, container: Container): CardModel 
       silent: p.silent,
       pickVcodec: p.vcodec,
       pickExt: p.ext,
-      expectedVideo: p.videoSize,
-      expectedAudio: p.audioSize,
+      expectedVideo: part(p.videoSize, clip),
+      expectedAudio: part(p.audioSize, clip),
     },
   };
 }
@@ -218,13 +228,15 @@ function sniffCards(page: string, candidates: SniffCandidate[], mode: Mode, cont
   }));
 }
 
-export function buildCards(probe: ProbeResult | null, mode: Mode, container: Container, fmt: AudioFormat): CardModel[] {
+/** `clipLen`: length of the cut in seconds (null = the whole thing): sizes shrink to match. */
+export function buildCards(probe: ProbeResult | null, mode: Mode, container: Container, fmt: AudioFormat, clipLen: number | null = null): CardModel[] {
   if (!probe) return [];
   switch (probe.kind) {
     case 'video': {
       const m = probe.media;
-      if (mode === 'video') return m.tiers.map((t) => videoCard(t.label, container === 'mp4' ? t.mp4 : t.mkv, container));
-      return m.audio.available ? audioCards(m.audio, fmt, m.duration) : [];
+      const clip = clipLen && m.duration ? { len: clipLen, frac: Math.min(1, clipLen / m.duration) } : null;
+      if (mode === 'video') return m.tiers.map((t) => videoCard(t.label, container === 'mp4' ? t.mp4 : t.mkv, container, clip));
+      return m.audio.available ? audioCards(m.audio, fmt, clip ? clip.len : m.duration) : [];
     }
     case 'playlist':
       return playlistCards(probe.playlist, mode, container, fmt);

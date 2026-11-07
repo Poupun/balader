@@ -8,15 +8,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{Notify, mpsc};
 
+use crate::cut;
 use crate::engine::Engine;
 use crate::error::{CoreError, ErrorCode, ErrorPayload, Result, classify_ytdlp_error};
 use crate::events::{CoreEvent, EventBus};
 use crate::model::{DownloadRequest, HistoryEntry, JobSnapshot, JobStatus, Mode};
 use crate::progress::{Line, ProgressLine, parse_line, post_stage};
-use crate::selector::{ArgsContext, download_args};
+use crate::selector::{ArgsContext, active_cut, download_args};
 use crate::store::{HistoryStore, SettingsStore};
 use crate::util::{new_id, now_ms, path_str};
 use crate::proc;
@@ -81,6 +82,7 @@ impl JobManager {
 
     pub fn enqueue(&self, mut req: DownloadRequest) -> Result<JobSnapshot> {
         req.url = crate::probe::normalize_url(&req.url)?;
+        req.cut = if req.playlist { None } else { cut::normalize(req.cut, req.duration)? };
         self.inner.engine.ytdlp_path()?;
         let settings = self.inner.settings.get();
         let output_dir = if settings.output_dir.trim().is_empty() { self.inner.settings.default_output() } else { PathBuf::from(&settings.output_dir) };
@@ -92,6 +94,7 @@ impl JobManager {
             platform: req.platform.clone(),
             mode: req.mode,
             summary: summary_for(&req),
+            cut: req.cut,
             status: JobStatus::Queued,
             stage: "queued".into(),
             stage_label: "Waiting in line".into(),
@@ -293,6 +296,9 @@ impl Inner {
 
         let mut cmd = proc::command(&ytdlp);
         proc::isolate(&mut cmd);
+        if let Some(ca) = self.engine.ca_bundle() {
+            cmd.env("SSL_CERT_FILE", ca);
+        }
         cmd.args(&args);
         let mut child = cmd.spawn()?;
         let (tx, mut rx) = mpsc::channel::<(bool, String)>(512);
@@ -314,11 +320,12 @@ impl Inner {
                 }
                 msg = rx.recv() => {
                     let Some((is_err, text)) = msg else { break };
-                    if is_err && stderr_buf.len() < 64_000 {
-                        stderr_buf.push_str(&text);
-                        stderr_buf.push('\n');
+                    let line = parse_line(&text);
+                    // Keep the tail (errors come last), minus FFmpeg's stats chatter.
+                    if is_err && !matches!(line, Line::Ffmpeg { .. }) {
+                        push_tail(&mut stderr_buf, &text, 64_000);
                     }
-                    let stage_changed = state.apply(parse_line(&text));
+                    let stage_changed = state.apply(line);
                     if stage_changed || last_emit.elapsed() >= Duration::from_millis(125) {
                         last_emit = Instant::now();
                         if let Some(s) = self.update(&snap.id, |s| state.write(s)) {
@@ -424,6 +431,7 @@ impl Inner {
                 platform: snap.platform.clone(),
                 mode: snap.mode,
                 summary: snap.summary.clone(),
+                cut: snap.cut,
                 files: snap.files.clone(),
                 size,
                 finished_at: snap.finished_at.unwrap_or_else(now_ms),
@@ -479,27 +487,58 @@ pub(crate) fn deliver(staged: &[PathBuf], stage: &Path, home: &Path) -> Result<V
 }
 
 fn spawn_reader<R: AsyncRead + Unpin + Send + 'static>(pipe: Option<R>, tx: mpsc::Sender<(bool, String)>, is_err: bool) {
-    let Some(pipe) = pipe else { return };
+    let Some(mut pipe) = pipe else { return };
     tokio::spawn(async move {
-        let mut reader = BufReader::new(pipe);
-        let mut buf = Vec::new();
+        let mut chunk = vec![0u8; 16 * 1024];
+        let mut pending: Vec<u8> = Vec::new();
         loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf).await {
+            let n = match pipe.read(&mut chunk).await {
                 Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let text = String::from_utf8_lossy(&buf);
-                    // yt-dlp may still use \r between progress updates on some paths.
-                    for piece in text.split('\r') {
-                        let piece = piece.trim_end_matches('\n');
-                        if !piece.trim().is_empty() && tx.send((is_err, piece.to_string())).await.is_err() {
-                            return;
-                        }
-                    }
+                Ok(n) => n,
+            };
+            pending.extend_from_slice(&chunk[..n]);
+            for piece in take_pieces(&mut pending) {
+                if tx.send((is_err, piece)).await.is_err() {
+                    return;
                 }
             }
+            if pending.len() > 1 << 20 {
+                pending.clear();
+            }
+        }
+        let rest = String::from_utf8_lossy(&pending).trim_end().to_string();
+        if !rest.trim().is_empty() {
+            let _ = tx.send((is_err, rest)).await;
         }
     });
+}
+
+/// Cut complete pieces off the front of `pending`. yt-dlp ends its lines with
+/// `\n`; FFmpeg redraws its stats line with `\r`, so both end a piece (and a
+/// stats update arrives as it happens, not when FFmpeg finally prints `\n`).
+pub(crate) fn take_pieces(pending: &mut Vec<u8>) -> Vec<String> {
+    let mut out = Vec::new();
+    while let Some(pos) = pending.iter().position(|b| *b == b'\n' || *b == b'\r') {
+        let piece: Vec<u8> = pending.drain(..=pos).collect();
+        let text = String::from_utf8_lossy(&piece[..piece.len() - 1]).trim_end().to_string();
+        if !text.trim().is_empty() {
+            out.push(text);
+        }
+    }
+    out
+}
+
+/// Append a line, keeping only the last `max` bytes (on a char boundary).
+fn push_tail(buf: &mut String, line: &str, max: usize) {
+    buf.push_str(line);
+    buf.push('\n');
+    if buf.len() > max + max / 2 {
+        let mut cut_at = buf.len() - max;
+        while !buf.is_char_boundary(cut_at) {
+            cut_at += 1;
+        }
+        buf.drain(..cut_at);
+    }
 }
 
 // ------------------------------------------------------------ progress state
@@ -524,6 +563,15 @@ pub(crate) struct RunState {
     pub(crate) already: Vec<String>,
     pub(crate) downloaded_any: bool,
     current_part: Option<u32>,
+    /// Clip length when cutting: FFmpeg reports its position in the clip.
+    cut_len: Option<f64>,
+    cut_label: &'static str,
+    cut_started: bool,
+    cut_frac: f64,
+    cut_bytes: u64,
+    cut_eta: Option<f64>,
+    cut_bps: Option<f64>,
+    cut_last: Option<(Instant, u64)>,
 }
 
 impl RunState {
@@ -555,6 +603,14 @@ impl RunState {
             already: Vec::new(),
             downloaded_any: false,
             current_part: None,
+            cut_len: active_cut(req).map(|c| c.end - c.start).filter(|l| *l > 0.0),
+            cut_label: if req.mode == Mode::Audio { "Cutting the track" } else { "Cutting the clip" },
+            cut_started: false,
+            cut_frac: 0.0,
+            cut_bytes: 0,
+            cut_eta: None,
+            cut_bps: None,
+            cut_last: None,
         }
     }
 
@@ -589,10 +645,11 @@ impl RunState {
                 self.set_stage("extract", format!("Reading card {} of {}", self.item, self.items))
             }
             Line::Extract { .. } if self.stage == "extract" || self.stage == "queued" => self.set_stage("extract", "Shuffling the deck"),
+            Line::Ffmpeg { time, size, speed } => self.on_cut_stats(time, size, speed),
             Line::Post { name, .. } => {
                 // Some steps (thumbnail conversion) run *before* the download:
                 // they must not push the bar to the post-processing zone.
-                if self.frac.is_empty() {
+                if self.frac.is_empty() && !self.cut_started {
                     return self.set_stage("extract", "Preparing");
                 }
                 self.processing = true;
@@ -621,7 +678,52 @@ impl RunState {
         }
     }
 
+    /// FFmpeg is cutting: its clock position over the clip length is the progress.
+    fn on_cut_stats(&mut self, time: Option<f64>, size: Option<u64>, speed: Option<f64>) -> bool {
+        let Some(len) = self.cut_len else { return false };
+        if self.processing {
+            return false;
+        }
+        if let Some(t) = time {
+            self.cut_frac = self.cut_frac.max((t / len).clamp(0.0, 1.0));
+            self.cut_eta = speed.map(|x| (len - t).max(0.0) / x);
+        }
+        if let Some(b) = size {
+            let now = Instant::now();
+            match self.cut_last {
+                Some((t0, b0)) => {
+                    let dt = now.duration_since(t0).as_secs_f64();
+                    if dt >= 0.2 && b >= b0 {
+                        let rate = (b - b0) as f64 / dt;
+                        self.cut_bps = Some(self.cut_bps.map_or(rate, |prev| prev * 0.6 + rate * 0.4));
+                        self.cut_last = Some((now, b));
+                    }
+                }
+                None => self.cut_last = Some((now, b)),
+            }
+            self.cut_bytes = self.cut_bytes.max(b);
+            if b > 0 {
+                self.downloaded_any = true;
+            }
+        }
+        self.cut_started = true;
+        let label = self.cut_label;
+        self.set_stage("cut", label)
+    }
+
     fn on_progress(&mut self, p: &ProgressLine) -> bool {
+        if self.cut_len.is_some() {
+            // Cutting: yt-dlp reports once, when FFmpeg is done (format "299+140").
+            if let Some(f) = p.fraction() {
+                self.cut_frac = self.cut_frac.max(f);
+            }
+            if let Some(t) = p.total() {
+                self.cut_bytes = self.cut_bytes.max(t as u64);
+            }
+            self.cut_started = true;
+            let label = self.cut_label;
+            return self.set_stage("cut", label);
+        }
         if let (Some(i), Some(n)) = (p.i.playlist_index, p.i.n_entries.or(p.i.playlist_count)) {
             if i >= 1.0 && n >= 1.0 {
                 self.item = i as u32;
@@ -673,6 +775,9 @@ impl RunState {
         if self.frac.contains_key("_already") {
             return 1.0;
         }
+        if self.cut_len.is_some() {
+            return self.cut_frac;
+        }
         if self.formats.len() <= 1 {
             return self.frac.values().copied().fold(0.0, f64::max);
         }
@@ -685,6 +790,10 @@ impl RunState {
     }
 
     fn bytes(&self) -> (u64, Option<u64>) {
+        if self.cut_len.is_some() {
+            // The clip's final size is only known once it's written.
+            return (self.cut_bytes, (self.cut_frac >= 1.0 && self.cut_bytes > 0).then_some(self.cut_bytes));
+        }
         let mut done = 0.0;
         let mut total = 0.0;
         let mut all_known = !self.formats.is_empty();
@@ -723,6 +832,13 @@ impl RunState {
         };
         s.parts = if self.formats.len() > 1 { Some(self.formats.len() as u32) } else { None };
         s.part = if self.formats.len() > 1 { self.current_part } else { None };
+        if self.cut_len.is_some() {
+            // One FFmpeg pass reads video and audio together: no parts.
+            s.speed = if self.processing { None } else { self.cut_bps };
+            s.eta = if self.processing { None } else { self.cut_eta };
+            s.parts = None;
+            s.part = None;
+        }
         if self.items > 1 {
             s.item = Some(self.item);
             s.items = Some(self.items);
@@ -734,7 +850,7 @@ impl RunState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AudioFormat, Container};
+    use crate::model::{AudioFormat, Container, Cut};
 
     fn snap() -> JobSnapshot {
         JobSnapshot {
@@ -745,6 +861,7 @@ mod tests {
             platform: None,
             mode: Mode::Video,
             summary: String::new(),
+            cut: None,
             status: JobStatus::Starting,
             stage: "extract".into(),
             stage_label: String::new(),
@@ -853,6 +970,89 @@ mod tests {
         st.write(&mut s);
         assert_eq!(s.stage, "subs");
         assert!((s.progress - 0.1 * 0.94).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cut_progress_follows_ffmpeg() {
+        let req = DownloadRequest {
+            mode: Mode::Video,
+            video_id: Some("299".into()),
+            audio_id: Some("140".into()),
+            expected_video: Some(90_000_000),
+            expected_audio: Some(10_000_000),
+            cut: Some(Cut { start: 10.0, end: 30.0, exact: true }),
+            ..Default::default()
+        };
+        let mut st = RunState::new(&req);
+        let mut s = snap();
+        st.apply(parse_line("[ThumbnailsConvertor] Converting thumbnail \"x.webp\" to jpg"));
+        st.apply(parse_line("[info] x: Downloading 1 format(s): 299+140"));
+        st.apply(parse_line("[info] x: Downloading 1 time ranges: 10.0-30.0"));
+        st.apply(parse_line("[download] Destination: /stage/x (10s-30s).mp4"));
+        st.write(&mut s);
+        assert_eq!(s.status, JobStatus::Starting, "{}", s.stage_label);
+        assert!(s.progress < 0.01);
+
+        assert!(st.apply(parse_line("frame=  259 fps=171 q=26.0 size=    1024KiB time=00:00:05.00 bitrate=1911.4kbits/s speed=2.5x")));
+        st.write(&mut s);
+        assert_eq!(s.stage, "cut");
+        assert_eq!(s.stage_label, "Cutting the clip");
+        assert_eq!(s.status, JobStatus::Downloading);
+        assert!((s.progress - 0.25 * 0.94).abs() < 1e-9, "{}", s.progress);
+        assert_eq!(s.downloaded, 1024 * 1024);
+        assert_eq!(s.total, None, "a clip's size is unknown until it's written");
+        assert_eq!(s.eta, Some(6.0), "15 s of clip left at 2.5x");
+        assert_eq!((s.part, s.parts), (None, None), "one FFmpeg pass, no parts");
+
+        // yt-dlp's single report at the end carries the merged format id.
+        st.apply(parse_line(r#"BLDR {"p":{"status":"finished","downloaded_bytes":7789051,"total_bytes":7789051},"i":{"format_id":"299+140","vcodec":"avc1","acodec":"mp4a"}}"#));
+        st.write(&mut s);
+        assert_eq!(s.stage, "cut", "not mistaken for subtitles");
+        assert!((s.progress - 0.94).abs() < 1e-9, "{}", s.progress);
+        assert_eq!(s.total, Some(7_789_051));
+
+        st.apply(parse_line("[EmbedThumbnail] ffmpeg: Adding thumbnail to \"x.mp4\""));
+        st.write(&mut s);
+        assert_eq!(s.status, JobStatus::Processing);
+        assert_eq!(s.stage, "embed");
+        assert!(s.progress >= 0.94);
+        assert_eq!(s.speed, None);
+    }
+
+    #[test]
+    fn audio_cut_label_and_playlists_ignore_cuts() {
+        let cut = Some(Cut { start: 0.0, end: 8.0, exact: true });
+        let mut st = RunState::new(&DownloadRequest { mode: Mode::Audio, cut, ..Default::default() });
+        let mut s = snap();
+        st.apply(parse_line("size=     256KiB time=00:00:02.00 bitrate= 209.7kbits/s speed=20x"));
+        st.write(&mut s);
+        assert_eq!(s.stage_label, "Cutting the track");
+        assert!((s.progress - 0.25 * 0.94).abs() < 1e-9);
+        // Playlists never cut, so FFmpeg stats (from elsewhere) change nothing.
+        let mut st = RunState::new(&DownloadRequest { mode: Mode::Audio, playlist: true, cut, ..Default::default() });
+        assert!(!st.apply(parse_line("size=     256KiB time=00:00:02.00 bitrate= 209.7kbits/s speed=20x")));
+    }
+
+    #[test]
+    fn pieces_split_on_cr_and_lf() {
+        let mut pending = b"[download] Destination: a.mp4\nframe= 1 time=00:00:01.00\rframe= 2 time=00:00:02.00\rpartial".to_vec();
+        assert_eq!(take_pieces(&mut pending), vec!["[download] Destination: a.mp4", "frame= 1 time=00:00:01.00", "frame= 2 time=00:00:02.00"]);
+        assert_eq!(pending, b"partial");
+        // CRLF makes no empty pieces; multi-byte characters survive.
+        let mut pending = "Éclair ☕\r\n".as_bytes().to_vec();
+        assert_eq!(take_pieces(&mut pending), vec!["Éclair ☕"]);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn stderr_keeps_the_tail() {
+        let mut buf = String::new();
+        for i in 0..2000 {
+            push_tail(&mut buf, &format!("line {i} é"), 1000);
+        }
+        assert!(buf.len() <= 1500);
+        assert!(buf.ends_with("line 1999 é\n"));
+        assert!(!buf.contains("line 0 "));
     }
 
     #[test]

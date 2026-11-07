@@ -36,8 +36,9 @@ export function cardFace(c: CardModel): HTMLElement {
   );
 }
 
+/** What needs a flip to change. The size label alone just ticks over in place (cuts change it a lot). */
 function faceSignature(c: CardModel): string {
-  return JSON.stringify([c.big, c.corner, c.cornerSub, c.name, c.cls, c.foil, c.chips, c.size, c.disabled, c.icon]);
+  return JSON.stringify([c.big, c.corner, c.cornerSub, c.name, c.cls, c.foil, c.chips, c.disabled, c.icon]);
 }
 
 interface CardView {
@@ -58,12 +59,13 @@ export function mountHand(parent: HTMLElement): void {
 
   const layout = (animate = true) => {
     const H = hand.clientHeight;
-    const base = Math.max(0.85, Math.min(1.22, (H - 84) / CARD_H));
+    // Room above for the picked card's lift, so it never covers the panel above.
+    const base = Math.max(0.7, Math.min(1.22, (H - 110) / CARD_H));
     hand.style.setProperty('--base', base.toFixed(3));
     const effW = CARD_W * base;
     const effH = CARD_H * base;
     const arc = Math.min(26, 3.2 * order.length);
-    const top = Math.max(16, Math.round((H - effH - arc) / 2) + 8);
+    const top = Math.max(46, Math.round((H - effH - arc) / 2) + 8);
     // Boxes stay 116x162 and scale around their centre: shift so the visual lands on the slot.
     const dx = (effW - CARD_W) / 2;
     const dy = (effH - CARD_H) / 2;
@@ -283,7 +285,14 @@ export function mountHand(parent: HTMLElement): void {
       v.el.setAttribute('data-tip', c.tip);
       v.el.setAttribute('aria-label', `${c.summary}. ${c.size}`);
       const sig = faceSignature(c);
-      if (sig === v.sig) return;
+      if (sig === v.sig) {
+        const size = v.inner.querySelector<HTMLElement>('.card__size');
+        if (size && size.textContent !== c.size) {
+          size.textContent = c.size;
+          if (!motion.frozen) size.animate([{ transform: 'scale(1.25)', color: '#e0582b' }, { transform: 'scale(1)' }], { duration: ms(360), easing: 'cubic-bezier(.2,1.4,.4,1)' });
+        }
+        return;
+      }
       v.sig = sig;
       const swap = () => {
         v.el.className = `card ${c.cls}${c.foil ? ' is-foil' : ''}${c.disabled ? ' is-disabled' : ''}${store.get().selected === c.key ? ' is-selected' : ''}`;

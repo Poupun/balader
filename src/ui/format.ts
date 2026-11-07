@@ -125,3 +125,98 @@ export function extractUrl(text: string): string | null {
   const t = text.trim();
   return looksLikeUrl(t) ? t : null;
 }
+
+// ------------------------------------------------------------ cut times
+// Same rules as the Rust core (crates/balader-core/src/cut.rs).
+
+function parseNumber(n: string): number | null {
+  if (!n || n === '.' || !/^[0-9.]+$/.test(n) || (n.match(/\./g)?.length ?? 0) > 1) return null;
+  const v = Number(n);
+  return Number.isFinite(v) ? v : null;
+}
+
+/** What people type → seconds: `83`, `1:23.5`, `01:02:03`, `1h2m3s`, `1m30`, `1:23,5`. */
+export function parseTime(input: string): number | null {
+  const s = input.trim().replace(',', '.').toLowerCase();
+  if (!s) return null;
+  let total = 0;
+  if (/[hms]/.test(s)) {
+    const rank: Record<string, number> = { h: 0, m: 1, s: 2 };
+    const scale: Record<string, number> = { h: 3600, m: 60, s: 1 };
+    let num = '';
+    let last: string | null = null;
+    for (const c of s) {
+      if (/[0-9.]/.test(c)) num += c;
+      else if (c in rank) {
+        if (last !== null && rank[last] >= rank[c]) return null;
+        const v = parseNumber(num);
+        if (v === null) return null;
+        total += v * scale[c];
+        num = '';
+        last = c;
+      } else if (c !== ' ') return null;
+    }
+    if (num) {
+      const v = parseNumber(num);
+      if (v === null || (last !== 'h' && last !== 'm')) return null;
+      total += v * (last === 'h' ? 60 : 1);
+    }
+  } else {
+    const parts = s.split(':').map((p) => p.trim());
+    if (parts.length > 3) return null;
+    for (let i = 0; i < parts.length; i++) {
+      const last = i === parts.length - 1;
+      if (!last && !/^[0-9]*$/.test(parts[i])) return null;
+      const v = parseNumber(parts[i]);
+      if (v === null || (i > 0 && v >= 60)) return null;
+      total = total * 60 + v;
+    }
+  }
+  return Number.isFinite(total) && total >= 0 ? total : null;
+}
+
+function splitMs(t: number): [number, number, number, number] {
+  const ms = Math.round(Math.max(0, t) * 1000);
+  return [Math.floor(ms / 3_600_000), Math.floor(ms / 60_000) % 60, Math.floor(ms / 1000) % 60, ms % 1000];
+}
+
+/** `0:05`, `1:23.5`, `1:02:03.25`. With `minDecimals` the fraction is always shown (`0:12.0`). */
+export function clock(t: number, minDecimals = 0): string {
+  const [h, m, s, ms] = splitMs(t);
+  let frac = String(ms).padStart(3, '0').replace(/0+$/, '');
+  if (frac.length < minDecimals) frac = frac.padEnd(minDecimals, '0');
+  const tail = frac ? `.${frac}` : '';
+  const ss = String(s).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}${tail}` : `${m}:${ss}${tail}`;
+}
+
+/** File-name friendly (no colons): `5s`, `1m05s`, `1h02m03.5s`. */
+export function compactTime(t: number): string {
+  const [h, m, s, ms] = splitMs(t);
+  const frac = ms ? `.${String(ms).padStart(3, '0').replace(/0+$/, '')}` : '';
+  if (h > 0) return `${h}h${String(m).padStart(2, '0')}m${String(s).padStart(2, '0')}${frac}s`;
+  if (m > 0) return `${m}m${String(s).padStart(2, '0')}${frac}s`;
+  return `${s}${frac}s`;
+}
+
+/** Clip length for humans: `41.5s`, `2m 05s`, `1h 02m`. */
+export function clipLength(t: number): string {
+  if (t < 60) return `${(Math.round(t * 10) / 10).toFixed(1)}s`;
+  const [h, m, s] = splitMs(t);
+  return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(s).padStart(2, '0')}s`;
+}
+
+/** A "nice" ruler step (seconds) so that about `target` labels fit. */
+export function rulerStep(duration: number, target = 6): number {
+  const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200];
+  return steps.find((st) => duration / st <= target) ?? 7200;
+}
+
+/** Where moment `t` sits in a storyboard: the sheet URL and the frame's top-left corner in it. */
+export function storyboardFrame(b: { width: number; height: number; columns: number; rows: number; frames: number; sheets: string[] }, duration: number, t: number): { url: string; sx: number; sy: number } {
+  const idx = Math.max(0, Math.min(b.frames - 1, Math.floor((t / duration) * b.frames)));
+  const per = b.columns * b.rows;
+  const sheet = Math.min(b.sheets.length - 1, Math.floor(idx / per));
+  const cell = idx - sheet * per;
+  return { url: b.sheets[sheet], sx: (cell % b.columns) * b.width, sy: Math.floor(cell / b.columns) * b.height };
+}

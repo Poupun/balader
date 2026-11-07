@@ -2,7 +2,8 @@
 // core produces for real sites (see crates/balader-core/src/formats.rs tests).
 // Thumbnails are painted procedurally so tests never touch the network.
 
-import type { AudioTrack, ErrorPayload, MediaInfo, PlatformInfo, PlaylistInfo, SniffCandidate, TierPick, VideoTier } from '../types';
+import type { AudioTrack, ErrorPayload, MediaInfo, PlatformInfo, PlaylistInfo, SniffCandidate, Storyboard, TierPick, VideoTier } from '../types';
+import { clock } from '../../ui/format';
 
 export const PLATFORMS: Record<string, PlatformInfo> = {
   youtube: { key: 'youtube', name: 'YouTube', color: '#ff4e45' },
@@ -129,6 +130,75 @@ export function paintThumb(kind: keyof typeof PAINTERS | string, w = 480, h = 27
   return url;
 }
 
+// ------------------------------------------------------------ storyboards
+
+/** Two levels like YouTube's: sheet URLs are `mock://storyboard/…`, painted on demand by the mock's `thumbnail`. */
+export function storyboards(id: string, duration: number): Storyboard[] {
+  const level = (n: number, width: number, height: number, columns: number, rows: number, frames: number): Storyboard => ({
+    width,
+    height,
+    columns,
+    rows,
+    frames,
+    sheets: Array.from({ length: Math.ceil(frames / (columns * rows)) }, (_, i) => `mock://storyboard/${id}/${n}/${i}?d=${duration}&f=${frames}&w=${width}&h=${height}&c=${columns}&r=${rows}`),
+  });
+  return [level(0, 80, 45, 10, 10, 100), level(1, 160, 90, 5, 5, 150)];
+}
+
+/** One sheet of the golden-hour film: the sun sinks frame by frame, each frame stamped with its time. */
+export function paintStoryboardSheet(url: string): string | null {
+  if (cache.has(url)) return cache.get(url)!;
+  if (typeof document === 'undefined') return null;
+  const m = url.match(/^mock:\/\/storyboard\/[^/]+\/\d+\/(\d+)\?d=([\d.]+)&f=(\d+)&w=(\d+)&h=(\d+)&c=(\d+)&r=(\d+)$/);
+  if (!m) return null;
+  const [sheet, d, frames, w, h, cols, rows] = m.slice(1).map(Number);
+  const c = document.createElement('canvas');
+  c.width = w * cols;
+  c.height = h * rows;
+  const g = c.getContext('2d');
+  if (!g) return null;
+  const mix = (a: number[], b: number[], t: number) => `rgb(${a.map((x, i) => Math.round(x + (b[i] - x) * t)).join(',')})`;
+  for (let k = 0; k < cols * rows; k++) {
+    const x0 = (k % cols) * w;
+    const y0 = Math.floor(k / cols) * h;
+    const f = sheet * cols * rows + k;
+    if (f >= frames) {
+      g.fillStyle = '#000';
+      g.fillRect(x0, y0, w, h);
+      continue;
+    }
+    const t = (f * d) / frames;
+    const u = t / d;
+    const sky = g.createLinearGradient(0, y0, 0, y0 + h * 0.62);
+    sky.addColorStop(0, mix([43, 26, 79], [12, 8, 34], u));
+    sky.addColorStop(0.7, mix([255, 122, 69], [176, 52, 90], u));
+    sky.addColorStop(1, mix([255, 207, 107], [255, 110, 70], u));
+    g.fillStyle = sky;
+    g.fillRect(x0, y0, w, h);
+    g.fillStyle = mix([255, 241, 184], [255, 150, 90], u);
+    g.beginPath();
+    g.arc(x0 + w * (0.2 + 0.6 * u), y0 + h * (0.3 + 0.32 * u), h * 0.13, 0, Math.PI * 2);
+    g.fill();
+    for (let i = 0; i < 5; i++) {
+      g.fillStyle = i % 2 ? mix([29, 78, 122], [18, 40, 70], u) : mix([36, 98, 148], [24, 52, 88], u);
+      g.fillRect(x0, y0 + h * (0.62 + i * 0.08), w, h * 0.08);
+    }
+    g.font = `bold ${Math.max(8, Math.round(h * 0.2))}px monospace`;
+    g.fillStyle = '#000';
+    g.fillText(clock(t), x0 + 4, y0 + h - 4);
+    g.fillStyle = '#fff';
+    g.fillText(clock(t), x0 + 3, y0 + h - 5);
+  }
+  let data: string | null = null;
+  try {
+    data = c.toDataURL('image/jpeg', 0.8);
+  } catch {
+    data = null;
+  }
+  if (data) cache.set(url, data);
+  return data;
+}
+
 // ------------------------------------------------------------ builders
 
 function tp(p: Partial<TierPick> & { videoId: string; vcodec: string }, duration: number, kbps: number, audioKbps = 0): TierPick {
@@ -192,6 +262,7 @@ export function youtube(url = 'https://www.youtube.com/watch?v=0cEaNw4vEs0'): Me
     },
     subtitles: ['en', 'fr', 'ja'],
     formatCount: 34,
+    storyboards: storyboards('0cEaNw4vEs0', d),
   };
 }
 
@@ -221,6 +292,7 @@ export function tiktok(url = 'https://www.tiktok.com/@packlight/video/7300000000
     audio: { available: true, fromCombined: true, best: { formatId: 'h264_1080p', codec: 'AAC', ext: 'mp4', abr: 128, size: null, sizeExact: false, language: null }, tracks: [] },
     subtitles: [],
     formatCount: 9,
+    storyboards: [],
   };
 }
 
@@ -244,6 +316,7 @@ export function soundcloud(url = 'https://soundcloud.com/forss/flickermood'): Me
     audio: { available: true, fromCombined: false, best: track('hls_aac_160k', 'AAC', 'm4a', 160, d), tracks: [track('hls_aac_160k', 'AAC', 'm4a', 160, d), track('hls_opus_64k', 'Opus', 'opus', 64, d)] },
     subtitles: [],
     formatCount: 2,
+    storyboards: [],
   };
 }
 
@@ -272,6 +345,7 @@ export function archive(url = 'https://archive.org/details/BigBuckBunny_124'): M
     audio: { available: true, fromCombined: true, best: { formatId: '2', codec: 'MP4', ext: 'avi', abr: null, size: null, sizeExact: false, language: null }, tracks: [] },
     subtitles: [],
     formatCount: 3,
+    storyboards: [],
   };
 }
 

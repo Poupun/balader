@@ -5,10 +5,10 @@ import { countUp, flyTo, pop, screenShake, shake } from '../fx/juice';
 import { ms } from '../fx/motion';
 import { sfx } from '../fx/sound';
 import { api } from '../api/client';
-import type { HistoryEntry, JobSnapshot } from '../api/types';
+import type { Cut, HistoryEntry, JobSnapshot } from '../api/types';
 import { cancelJob, clearFinished, removeHistory, removeJob, retryJob, setPileTab, store, type AppState } from '../state/app';
 import { h, replace } from './dom';
-import { bytes, eta, plural, speed } from './format';
+import { bytes, clipLength, clock, eta, plural, speed } from './format';
 import { centerOf, fxctx } from './fxctx';
 import { icon } from './icons';
 import { toast } from './overlay';
@@ -36,6 +36,12 @@ function timeAgo(ms: number): string {
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return `${Math.floor(s / 86400)} d ago`;
+}
+
+/** "✂ 0:12-0:53" on jobs that grab only part of the media. */
+function cutTag(c: Cut | null | undefined): HTMLElement | null {
+  if (!c) return null;
+  return h('span', { class: 'tag tag--gold job__cut', testid: 'job-cut', 'data-tip': `Only ${clipLength(c.end - c.start)}, from ${clock(c.start, 1)} to ${clock(c.end, 1)}` }, icon('scissors'), `${clock(c.start)}-${clock(c.end)}`);
 }
 
 function thumbBox(src: string | null, mode: string): HTMLElement {
@@ -69,7 +75,7 @@ function buildJob(j: JobSnapshot): JobView {
       'div',
       { class: 'job__body' },
       h('div', { class: 'job__title', 'data-tip': j.title }, j.title),
-      h('div', { class: 'job__meta' }, h('span', { class: 'tag' }, j.summary), stage),
+      h('div', { class: 'job__meta' }, h('span', { class: 'tag' }, j.summary), cutTag(j.cut), stage),
       bar,
       stats,
       buttons,
@@ -203,7 +209,7 @@ function historyRow(e: HistoryEntry): HTMLElement {
       'div',
       { class: 'job__body' },
       h('div', { class: 'job__title', 'data-tip': file ?? e.title }, e.title),
-      h('div', { class: 'job__meta' }, h('span', { class: 'tag' }, e.summary), h('span', { class: 'job__stage' }, `${bytes(e.size)} · ${timeAgo(e.finishedAt)}`)),
+      h('div', { class: 'job__meta' }, h('span', { class: 'tag' }, e.summary), cutTag(e.cut), h('span', { class: 'job__stage' }, `${bytes(e.size)} · ${timeAgo(e.finishedAt)}`)),
       h(
         'div',
         { class: 'job__buttons' },

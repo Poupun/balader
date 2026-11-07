@@ -1,7 +1,7 @@
 // Keyboard shortcuts and drag-and-drop of links.
 
 import { sfx } from '../fx/sound';
-import { deal, fold, pasteAndDeal, setModal, setMode, store } from '../state/app';
+import { cutAvailable, deal, fold, pasteAndDeal, setCutOpen, setModal, setMode, store } from '../state/app';
 import { h } from './dom';
 import { extractUrl } from './format';
 
@@ -43,6 +43,10 @@ export function initKeyboard(): void {
       else if (s.url) void deal();
     } else if (e.key.toLowerCase() === 'a') setMode('audio');
     else if (e.key.toLowerCase() === 'v') setMode('video');
+    else if (e.key.toLowerCase() === 'c' && cutAvailable()) {
+      sfx.play(s.cut.on ? 'close' : 'snip');
+      setCutOpen(!s.cut.on);
+    }
   });
 }
 

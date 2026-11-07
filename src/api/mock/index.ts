@@ -11,6 +11,7 @@ import type {
   AppInfo,
   ComponentStatus,
   CoreEvent,
+  Cut,
   DownloadRequest,
   EngineStatus,
   ErrorPayload,
@@ -21,7 +22,7 @@ import type {
 } from '../types';
 import { motion } from '../../fx/motion';
 import { random, range, seed as seedRng } from '../../fx/rng';
-import { extractUrl } from '../../ui/format';
+import { clock, compactTime, extractUrl } from '../../ui/format';
 import * as fx from './fixtures';
 
 export interface MockOptions {
@@ -33,7 +34,7 @@ export interface MockOptions {
 
 interface Part {
   fmt: string;
-  kind: 'video' | 'audio' | 'media';
+  kind: 'video' | 'audio' | 'media' | 'cut';
   size: number;
   done: number;
 }
@@ -65,6 +66,7 @@ function defaultSettings(): Settings {
     embedMetadata: true,
     embedSubs: false,
     subLangs: 'en.*',
+    exactCuts: true,
     mode: 'video',
     container: 'mp4',
     audioFormat: 'mp3',
@@ -102,6 +104,23 @@ function component(id: string, ready: boolean): ComponentStatus {
   };
 }
 
+/** Same checks as the core's cut::normalize. */
+export function normalizeCut(cut: Cut | null | undefined, duration: number | null | undefined): Cut | null {
+  if (!cut) return null;
+  if (![cut.start, cut.end].every(Number.isFinite) || cut.start < 0 || cut.end < 0) throw err('bad_request', "The cut times don't make sense.");
+  const r = (x: number) => Math.round(x * 1000) / 1000;
+  const start = r(cut.start);
+  let end = r(cut.end);
+  if (duration && duration > 0) {
+    if (start >= duration) throw err('bad_request', `The cut starts after the end (${clock(duration)}).`);
+    end = Math.min(end, r(duration));
+    if (start <= 0 && end >= r(duration)) return null;
+  }
+  if (end <= start) throw err('bad_request', 'The cut ends before it starts.', 'Put the end after the start.');
+  if (end - start < 0.1 - 1e-9) throw err('bad_request', 'That cut is too short.', 'Leave at least a tenth of a second between start and end.');
+  return { start, end, exact: cut.exact };
+}
+
 function err(code: ErrorPayload['code'], message: string, hint: string | null = null): ErrorPayload {
   return { code, message, hint, detail: null };
 }
@@ -123,6 +142,8 @@ export class MockBackend implements Backend {
   nextProbeError: ErrorPayload | null = null;
   /** Paths the UI asked to open/reveal (tests assert on these). */
   readonly opened: string[] = [];
+  /** The last download request, as the core would see it (tests). */
+  lastRequest: DownloadRequest | null = null;
   readonly calls: { cmd: string; args: unknown }[] = [];
 
   constructor(opts: MockOptions = {}) {
@@ -150,8 +171,8 @@ export class MockBackend implements Backend {
     const a = fx.soundcloud();
     const b = fx.archive();
     this.history = [
-      { id: 'h2', url: a.webpageUrl, title: a.title, thumbnail: a.thumbnail, platform: a.platform, mode: 'audio', summary: 'MP3 · 320K', files: [`${OUT}/Flickermood.mp3`], size: 8_587_902, finishedAt: now - 3_600_000 },
-      { id: 'h1', url: b.webpageUrl, title: b.title, thumbnail: b.thumbnail, platform: b.platform, mode: 'video', summary: '360p · MP4', files: [`${OUT}/Big Buck Bunny.mp4`], size: 61_900_000, finishedAt: now - 86_400_000 },
+      { id: 'h2', url: a.webpageUrl, title: a.title, thumbnail: a.thumbnail, platform: a.platform, mode: 'audio', summary: 'MP3 · 320K', cut: null, files: [`${OUT}/Flickermood.mp3`], size: 8_587_902, finishedAt: now - 3_600_000 },
+      { id: 'h1', url: b.webpageUrl, title: b.title, thumbnail: b.thumbnail, platform: b.platform, mode: 'video', summary: '360p · MP4', cut: null, files: [`${OUT}/Big Buck Bunny.mp4`], size: 61_900_000, finishedAt: now - 86_400_000 },
     ];
   }
 
@@ -240,8 +261,16 @@ export class MockBackend implements Backend {
         this.history = [];
         this.emit({ type: 'historyChanged' });
         return true;
-      case 'thumbnail':
-        return String(args.url ?? '');
+      case 'thumbnail': {
+        const url = String(args.url ?? '');
+        if (url.startsWith('mock://storyboard/')) {
+          await this.wait(40);
+          const data = fx.paintStoryboardSheet(url);
+          if (!data) throw err('unknown', 'not an image');
+          return data;
+        }
+        return url;
+      }
       case 'open_path':
       case 'reveal_path':
         this.opened.push(`${cmd}:${String(args.path)}`);
@@ -316,6 +345,7 @@ export class MockBackend implements Backend {
       platform: req.platform,
       mode: req.mode,
       summary: req.summary ?? (req.mode === 'audio' ? `${req.audioFormat.toUpperCase()} · ${req.audioQuality.toUpperCase()}` : `${req.tier ?? 'BEST'}p · ${req.container.toUpperCase()}`),
+      cut: req.cut ?? null,
       status: 'queued',
       stage: 'queued',
       stageLabel: 'Waiting in line',
@@ -339,6 +369,8 @@ export class MockBackend implements Backend {
   }
 
   private plan(req: DownloadRequest): Part[] {
+    // One FFmpeg pass reads just the clip, video and audio together.
+    if (req.cut) return [{ fmt: 'cut', kind: 'cut', size: (req.mode === 'audio' ? req.expectedAudio : (req.expectedVideo ?? 0) + (req.expectedAudio ?? 0)) || 6_000_000, done: 0 }];
     if (req.mode === 'audio') return [{ fmt: req.audioSourceId ?? 'ba', kind: 'audio', size: req.expectedAudio ?? 9_000_000, done: 0 }];
     if (req.combined || !req.audioId) return [{ fmt: req.videoId ?? 'b', kind: 'media', size: req.expectedVideo ?? 30_000_000, done: 0 }];
     return [
@@ -347,15 +379,19 @@ export class MockBackend implements Backend {
     ];
   }
 
-  private async start(req: DownloadRequest): Promise<JobSnapshot> {
+  private async start(input: DownloadRequest): Promise<JobSnapshot> {
     await this.wait(80);
-    if (!req?.url) throw err('bad_request', 'bad arguments: missing url');
+    if (!input?.url) throw err('bad_request', 'bad arguments: missing url');
     if (!this.engine.ready) throw err('engine_missing', "The engine isn't installed yet.");
+    const req: DownloadRequest = { ...input, cut: input.playlist ? null : normalizeCut(input.cut, input.duration) };
+    this.lastRequest = req;
     const items = req.playlist ? Math.min(req.playlistLimit ?? req.playlistCount ?? 3, 6) : 1;
     const post: [string, string, number][] =
       req.mode === 'audio'
         ? [['convert', `Converting to ${req.audioFormat.toUpperCase()}`, 900], ['embed', 'Embedding cover', 300], ['tags', 'Writing tags', 220], ['move', 'Moving to folder', 120]]
-        : req.combined
+        : req.cut
+          ? [['embed', 'Embedding cover', 300], ['tags', 'Writing tags', 200], ['move', 'Moving to folder', 120]]
+          : req.combined
           ? [['remux', 'Rewrapping', 400], ['embed', 'Embedding cover', 300], ['tags', 'Writing tags', 200], ['move', 'Moving to folder', 120]]
           : [['merge', 'Merging', 800], ['embed', 'Embedding cover', 300], ['tags', 'Writing tags', 200], ['move', 'Moving to folder', 120]];
     const sim: Sim = {
@@ -483,7 +519,8 @@ export class MockBackend implements Backend {
       this.pump();
       return;
     }
-    const label = part.kind === 'video' ? 'Downloading video' : part.kind === 'audio' ? 'Downloading audio' : 'Downloading';
+    const label =
+      part.kind === 'cut' ? (sim.req.mode === 'audio' ? 'Cutting the track' : 'Cutting the clip') : part.kind === 'video' ? 'Downloading video' : part.kind === 'audio' ? 'Downloading audio' : 'Downloading';
     this.update(sim, {
       status: 'downloading',
       stage: part.kind,
@@ -532,14 +569,15 @@ export class MockBackend implements Backend {
   private finish(sim: Sim): void {
     sim.phase = 'done';
     const ext = sim.req.mode === 'audio' ? sim.req.audioFormat : sim.req.container;
-    const base = (sim.req.title ?? 'video').replace(/[\\/:*?"<>|]/g, '_');
+    const cut = sim.req.cut;
+    const base = `${(sim.req.title ?? 'video').replace(/[\\/:*?"<>|]/g, '_')}${cut ? ` (${compactTime(cut.start)}-${compactTime(cut.end)})` : ''}`;
     const files = sim.req.playlist
       ? Array.from({ length: sim.items }, (_, i) => `${OUT}/${base}/${String(i + 1).padStart(3, '0')} - ${fx.playlist().entries[i]?.title ?? 'item'}.${ext}`)
       : [`${OUT}/${base}.${ext}`];
     const size = sim.parts.reduce((a, p) => a + p.size, 0) * sim.items;
     this.update(sim, { status: 'done', stage: 'done', stageLabel: 'Saved', progress: 1, files, speed: null, eta: null, downloaded: size, total: size, finishedAt: Date.now() });
     this.history = [
-      { id: sim.job.id, url: sim.job.url, title: sim.job.title, thumbnail: sim.job.thumbnail, platform: sim.job.platform, mode: sim.job.mode, summary: sim.job.summary, files, size, finishedAt: Date.now() },
+      { id: sim.job.id, url: sim.job.url, title: sim.job.title, thumbnail: sim.job.thumbnail, platform: sim.job.platform, mode: sim.job.mode, summary: sim.job.summary, cut: sim.job.cut, files, size, finishedAt: Date.now() },
       ...this.history.filter((h) => h.id !== sim.job.id),
     ];
     this.emit({ type: 'historyChanged' });

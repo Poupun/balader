@@ -4,7 +4,8 @@
 
 use std::path::Path;
 
-use crate::model::{AudioFormat, Container, DownloadRequest, FilenameStyle, Mode, Settings};
+use crate::cut;
+use crate::model::{AudioFormat, Container, Cut, DownloadRequest, FilenameStyle, Mode, Settings};
 
 /// Every progress line we ask yt-dlp to print starts with this marker.
 pub const PROGRESS_PREFIX: &str = "BLDR ";
@@ -33,6 +34,54 @@ pub fn filename_template(style: FilenameStyle) -> &'static str {
         FilenameStyle::UploaderTitle => "%(uploader,channel,creator|Unknown).60B - %(title).120B.%(ext)s",
         FilenameStyle::DateTitle => "%(upload_date>%Y-%m-%d,release_date>%Y-%m-%d|undated)s - %(title).140B.%(ext)s",
     }
+}
+
+/// `Title.%(ext)s` → `Title (1m05s-2m30s).%(ext)s`. The tag is literal text.
+pub fn tagged_template(template: &str, tag: &str) -> String {
+    let tag = tag.replace('%', "%%");
+    match template.strip_suffix(".%(ext)s") {
+        Some(stem) => format!("{stem}{tag}.%(ext)s"),
+        None => format!("{template}{tag}"),
+    }
+}
+
+/// The part to grab, if any. Cuts never apply to playlists.
+pub fn active_cut(req: &DownloadRequest) -> Option<Cut> {
+    req.cut.filter(|c| !req.playlist && c.end > c.start)
+}
+
+/// Exact cuts re-encode the clip: H.264 that plays everywhere, near
+/// transparent (CRF 18), fast preset. The audio is copied untouched.
+pub const EXACT_CUT_ARGS: &str = "-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a copy";
+
+/// Does FFmpeg write MP4/MKV (where H.264 can live)? Merged picks use the
+/// chosen container; single-file picks keep their own until the remux.
+fn h264_friendly_output(req: &DownloadRequest) -> bool {
+    let merged = req.video_id.is_some() && !req.combined && !req.silent;
+    merged || req.pick_ext.as_deref().is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "mp4" | "m4v" | "mov" | "mkv"))
+}
+
+/// yt-dlp hands sections to FFmpeg, which reads only that part from the site.
+pub fn cut_args(req: &DownloadRequest) -> Vec<String> {
+    let Some(c) = active_cut(req) else { return Vec::new() };
+    let mut args = vec!["--download-sections".to_string(), format!("*{:.3}-{:.3}", c.start, c.end)];
+    if req.mode == Mode::Video {
+        if c.exact {
+            // No stream copy: FFmpeg decodes from the keyframe before the
+            // start and keeps exactly the requested frames.
+            args.push("--force-keyframes-at-cuts".into());
+            // Elsewhere (WebM, OGV...) FFmpeg uses the container's own codecs.
+            if h264_friendly_output(req) {
+                args.push("--downloader-args".into());
+                args.push(format!("ffmpeg_o:{EXACT_CUT_ARGS}"));
+            }
+        } else if req.container == Container::Mp4 && req.pick_vcodec.as_deref() == Some("HEVC") {
+            // FFmpeg merges directly (no Merger step), so tag it here.
+            args.push("--downloader-args".into());
+            args.push("ffmpeg_o:-tag:v hvc1".into());
+        }
+    }
+    args
 }
 
 /// yt-dlp treats `%` in some path arguments as template syntax.
@@ -116,6 +165,8 @@ pub fn format_args(req: &DownloadRequest) -> Vec<String> {
 pub fn download_args(req: &DownloadRequest, ctx: &ArgsContext) -> Vec<String> {
     let s = ctx.settings;
     let mut args = format_args(req);
+    let clip = active_cut(req);
+    args.extend(cut_args(req));
 
     // Embeds.
     let wav = req.mode == Mode::Audio && req.audio_format == AudioFormat::Wav;
@@ -126,8 +177,13 @@ pub fn download_args(req: &DownloadRequest, ctx: &ArgsContext) -> Vec<String> {
     }
     if s.embed_metadata {
         args.push("--embed-metadata".into());
+        if clip.is_some() {
+            // The video's chapter times would be wrong inside a clip.
+            args.push("--no-embed-chapters".into());
+        }
     }
-    if s.embed_subs && req.mode == Mode::Video && !s.sub_langs.trim().is_empty() {
+    // Subtitles come whole, with the full video's timings: not for clips.
+    if s.embed_subs && req.mode == Mode::Video && clip.is_none() && !s.sub_langs.trim().is_empty() {
         args.push("--embed-subs".into());
         args.push("--sub-langs".into());
         args.push(format!("{},-live_chat", s.sub_langs.trim()));
@@ -154,7 +210,10 @@ pub fn download_args(req: &DownloadRequest, ctx: &ArgsContext) -> Vec<String> {
         format!("%(playlist_title,playlist,playlist_id|Playlist).80B/%(playlist_index)03d - {template}")
     } else {
         args.push("--no-playlist".into());
-        template.to_string()
+        match &clip {
+            Some(c) => tagged_template(template, &cut::file_tag(c)),
+            None => template.to_string(),
+        }
     };
 
     // Where things go.
@@ -312,6 +371,73 @@ mod tests {
         let args = download_args(&req, &ctx);
         assert!(!args.contains(&"--embed-thumbnail".to_string()));
         assert!(args.contains(&"/tmp/100%%/files.txt".to_string()));
+    }
+
+    fn cut_req(exact: bool) -> DownloadRequest {
+        DownloadRequest { cut: Some(Cut { start: 12.0, end: 53.5, exact }), ..video_req() }
+    }
+
+    #[test]
+    fn exact_cut_reencodes_only_the_clip() {
+        let (mut s, home, temp, print) = ctx_parts();
+        s.embed_subs = true;
+        let ctx = ArgsContext { settings: &s, home_dir: &home, temp_dir: &temp, print_file: &print };
+        let args = download_args(&cut_req(true), &ctx);
+        assert!(has_pair(&args, "--download-sections", "*12.000-53.500"));
+        assert!(args.contains(&"--force-keyframes-at-cuts".to_string()));
+        assert!(has_pair(&args, "--downloader-args", &format!("ffmpeg_o:{EXACT_CUT_ARGS}")));
+        assert!(has_pair(&args, "-o", "%(title).150B (12s-53.5s).%(ext)s"));
+        assert!(args.contains(&"--no-embed-chapters".to_string()), "chapter times would be off");
+        assert!(!args.contains(&"--embed-subs".to_string()), "subtitle times would be off");
+        // The whole video still gets subtitles.
+        let full = download_args(&video_req(), &ctx);
+        assert!(full.contains(&"--embed-subs".to_string()));
+        assert!(!full.contains(&"--no-embed-chapters".to_string()));
+        assert!(!full.contains(&"--download-sections".to_string()));
+    }
+
+    #[test]
+    fn fast_cut_keeps_the_streams() {
+        assert_eq!(cut_args(&cut_req(false)), vec!["--download-sections", "*12.000-53.500"]);
+        // HEVC in MP4 still gets its QuickTime tag (FFmpeg merges directly, no Merger step).
+        let hevc = DownloadRequest { pick_vcodec: Some("HEVC".into()), combined: true, pick_ext: Some("mp4".into()), audio_id: None, ..cut_req(false) };
+        assert!(has_pair(&cut_args(&hevc), "--downloader-args", "ffmpeg_o:-tag:v hvc1"));
+        // Re-encoded to H.264: no HEVC tag.
+        let exact = DownloadRequest { cut: Some(Cut { start: 1.0, end: 2.0, exact: true }), ..hevc };
+        assert!(!cut_args(&exact).iter().any(|a| a.contains("hvc1")));
+    }
+
+    #[test]
+    fn exact_cut_codecs_follow_the_output_container() {
+        // A single WebM file can't hold H.264: FFmpeg uses WebM's own codecs.
+        let webm = DownloadRequest { combined: true, pick_ext: Some("webm".into()), audio_id: None, ..cut_req(true) };
+        let args = cut_args(&webm);
+        assert!(args.contains(&"--force-keyframes-at-cuts".to_string()));
+        assert!(!args.contains(&"--downloader-args".to_string()));
+        let mp4 = DownloadRequest { combined: true, pick_ext: Some("mp4".into()), audio_id: None, ..cut_req(true) };
+        assert!(cut_args(&mp4).contains(&"--downloader-args".to_string()));
+    }
+
+    #[test]
+    fn audio_cuts_are_plain_sections() {
+        let req = DownloadRequest { mode: Mode::Audio, ..cut_req(true) };
+        assert_eq!(cut_args(&req), vec!["--download-sections", "*12.000-53.500"]);
+    }
+
+    #[test]
+    fn playlists_ignore_cuts() {
+        let (s, home, temp, print) = ctx_parts();
+        let ctx = ArgsContext { settings: &s, home_dir: &home, temp_dir: &temp, print_file: &print };
+        let req = DownloadRequest { playlist: true, video_id: None, ..cut_req(true) };
+        let args = download_args(&req, &ctx);
+        assert!(!args.contains(&"--download-sections".to_string()));
+        assert!(!args.iter().any(|a| a.contains("12s-53.5s")));
+    }
+
+    #[test]
+    fn template_tags() {
+        assert_eq!(tagged_template("%(title).150B.%(ext)s", " (1s-2s)"), "%(title).150B (1s-2s).%(ext)s");
+        assert_eq!(tagged_template("raw", " 100%"), "raw 100%%");
     }
 
     #[test]

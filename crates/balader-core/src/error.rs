@@ -146,6 +146,15 @@ pub fn classify_ytdlp_error(stderr: &str) -> CoreError {
         || lower.contains("contains no audio")
     {
         (ErrorCode::Unavailable, "There's no sound in this one.".into(), Some("It's a silent video: grab it as VIDEO instead."))
+    } else if lower.contains("cannot be partially downloaded") {
+        (ErrorCode::Unsupported, "This one can't be cut.".into(), Some("The site only serves it whole: close the cut and grab the whole thing."))
+    } else if lower.contains("ffmpeg exited with code") {
+        let tls = all_lower.contains("certificate verify failed");
+        (
+            if tls { ErrorCode::Network } else { ErrorCode::Unknown },
+            if tls { "FFmpeg couldn't open a secure connection to the site.".into() } else { "FFmpeg gave up on this one.".into() },
+            Some("Try again. If it keeps failing, try the fast cut or grab the whole thing."),
+        )
     } else if lower.contains("unsupported url") {
         (ErrorCode::Unsupported, "No extractor knows this site.".into(), Some("Balader also tried scraping the page for media."))
     } else if lower.contains("is not a valid url") || lower.contains("invalid url") {
@@ -260,6 +269,9 @@ mod tests {
                 "WARNING: [youtube] x: Unable to download webpage: HTTP Error 429: Too Many Requests\nERROR: [youtube] x: Video unavailable",
                 ErrorCode::RateLimited,
             ),
+            ("ERROR: [generic] x: This format cannot be partially downloaded. Aborting", ErrorCode::Unsupported),
+            ("[tls @ 0x1] error:0A000086:SSL routines::certificate verify failed\nERROR: ffmpeg exited with code 251", ErrorCode::Network),
+            ("ERROR: ffmpeg exited with code 1", ErrorCode::Unknown),
         ];
         for (stderr, code) in cases {
             assert_eq!(classify_ytdlp_error(stderr).code(), code, "{stderr}");

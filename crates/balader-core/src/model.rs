@@ -158,6 +158,23 @@ pub struct AudioInfo {
     pub tracks: Vec<AudioTrack>,
 }
 
+/// Preview frames (YouTube storyboards): sprite sheets of evenly spaced
+/// thumbnails, used by the cut timeline's filmstrip and frame preview.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Storyboard {
+    /// One frame, in pixels.
+    pub width: u32,
+    pub height: u32,
+    pub columns: u32,
+    pub rows: u32,
+    /// Frames over the whole video, evenly spaced (frame i starts at i × duration / frames).
+    pub frames: u32,
+    /// Sprite sheet URLs, in order (columns × rows frames each).
+    pub sheets: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -179,6 +196,8 @@ pub struct MediaInfo {
     pub audio: AudioInfo,
     pub subtitles: Vec<String>,
     pub format_count: u32,
+    /// Smallest first. Empty for most sites.
+    pub storyboards: Vec<Storyboard>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -234,6 +253,19 @@ pub enum ProbeResult {
 
 // ---------------------------------------------------------------- downloads
 
+/// Grab only part of the media: from `start` to `end`, in seconds.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Cut {
+    pub start: f64,
+    pub end: f64,
+    /// Frame-exact video cut (the clip is re-encoded to H.264). Off: the cut
+    /// lands on the nearest keyframe and the original streams are kept.
+    /// Audio cuts are always exact.
+    pub exact: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, TS)]
 #[serde(rename_all = "camelCase", default)]
 #[ts(export)]
@@ -274,6 +306,8 @@ pub struct DownloadRequest {
     pub playlist_limit: Option<u32>,
     /// Sent as Referer (media found by the scraper).
     pub referer: Option<String>,
+    /// Only this part of the media (single videos only; ignored for playlists).
+    pub cut: Option<Cut>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -309,8 +343,10 @@ pub struct JobSnapshot {
     pub platform: Option<PlatformInfo>,
     pub mode: Mode,
     pub summary: String,
+    /// The part being grabbed, when it isn't the whole thing.
+    pub cut: Option<Cut>,
     pub status: JobStatus,
-    /// Machine key: queued, extract, video, audio, media, subs, merge, convert, embed, tags, fixup, remux, move, done, error, cancelled.
+    /// Machine key: queued, extract, video, audio, media, cut, subs, merge, convert, embed, tags, fixup, remux, move, done, error, cancelled.
     pub stage: String,
     pub stage_label: String,
     /// Overall progress 0..1 (monotonic within a run).
@@ -349,6 +385,8 @@ pub struct HistoryEntry {
     pub platform: Option<PlatformInfo>,
     pub mode: Mode,
     pub summary: String,
+    #[serde(default)]
+    pub cut: Option<Cut>,
     pub files: Vec<String>,
     #[ts(type = "number")]
     pub size: u64,
@@ -371,6 +409,8 @@ pub struct Settings {
     pub embed_metadata: bool,
     pub embed_subs: bool,
     pub sub_langs: String,
+    /// Cuts are frame-exact (re-encoded) rather than keyframe-fast.
+    pub exact_cuts: bool,
     // Remembered choices.
     pub mode: Mode,
     pub container: Container,
@@ -397,6 +437,7 @@ impl Default for Settings {
             embed_metadata: true,
             embed_subs: false,
             sub_langs: "en.*".into(),
+            exact_cuts: true,
             mode: Mode::Video,
             container: Container::Mp4,
             audio_format: AudioFormat::Mp3,

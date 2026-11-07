@@ -139,4 +139,57 @@ test.describe('@shots', () => {
     await page.waitForTimeout(300);
     await shot(page, '11b-narrow-pile-done');
   });
+
+  test('12 the cut', async ({ page }) => {
+    await openApp(page, { freeze: true });
+    await dealUrl(page, URLS.youtube);
+    await until(page, (s) => s.phase === 'dealt');
+    await page.getByTestId('cut-toggle').click();
+    await page.evaluate(() => (window as unknown as { __balader: { actions: { setCut(a: number, b: number): void } } }).__balader.actions.setCut(125, 160.5));
+    await page.waitForTimeout(400);
+    await shot(page, '12a-cut-video');
+    // Drag the OUT handle: the frame card pops above it.
+    const box = (await page.getByTestId('cut-handle-out').boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 60, box.y + box.height / 2, { steps: 6 });
+    await page.waitForTimeout(300);
+    await shot(page, '12b-cut-dragging');
+    await page.mouse.up();
+    await page.getByTestId('cut-in-value').click();
+    await page.keyboard.type('2:00.5');
+    await shot(page, '12c-cut-typing');
+    await page.keyboard.press('Enter');
+    await page.getByTestId('mode-audio').click();
+    await page.waitForTimeout(300);
+    await shot(page, '12d-cut-audio');
+    await dealUrl(page, URLS.soundcloud);
+    await until(page, (s) => s.phase === 'dealt' && s.mode === 'audio');
+    await page.getByTestId('cut-toggle').click();
+    await page.evaluate(() => (window as unknown as { __balader: { actions: { setCut(a: number, b: number): void } } }).__balader.actions.setCut(30, 95));
+    await page.waitForTimeout(300);
+    await shot(page, '12e-cut-soundcloud');
+  });
+
+  test('13 narrow window with the cut', async ({ page }) => {
+    await page.setViewportSize({ width: 980, height: 640 });
+    await openApp(page, { freeze: true });
+    await dealUrl(page, URLS.youtube);
+    await until(page, (s) => s.phase === 'dealt');
+    await page.getByTestId('cut-toggle').click();
+    await page.evaluate(() => (window as unknown as { __balader: { actions: { setCut(a: number, b: number): void } } }).__balader.actions.setCut(61.2, 74));
+    await page.waitForTimeout(400);
+    await shot(page, '13-cut-narrow');
+  });
+
+  test('14 a cut in the pile', async ({ page }) => {
+    await openApp(page, { timescale: 0.6 });
+    await dealUrl(page, URLS.youtube);
+    await until(page, (s) => s.phase === 'dealt');
+    await page.getByTestId('cut-toggle').click();
+    await page.evaluate(() => (window as unknown as { __balader: { actions: { setCut(a: number, b: number): void } } }).__balader.actions.setCut(125, 160.5));
+    await page.getByTestId('grab').click();
+    await until(page, (s) => s.jobs[0]?.stage === 'cut' && s.jobs[0].progress > 0.2, 20_000);
+    await page.getByTestId('pile').screenshot({ path: `${DIR}/14-cut-in-pile.png` });
+  });
 });

@@ -157,6 +157,7 @@ mod tests {
                 platform: None,
                 mode: Mode::Video,
                 summary: String::new(),
+                cut: None,
                 files: vec![],
                 size: 1,
                 finished_at: i as u64,
