@@ -138,7 +138,10 @@ const watchHovers = (page: Page) =>
 test.describe('the hand', () => {
   // 8 cards in the default window: crowded, and 1080p is picked.
   test('sweeping the pointer across the hand meets every card, both ways', async ({ page }) => {
-    await openApp(page);
+    // Many pointer moves: CI machines without a GPU draw each frame of the
+    // swirl in software, so keep the table still and give it time.
+    test.slow();
+    await openApp(page, { freeze: true });
     await dealUrl(page, URLS.youtube);
     const { cards } = await until(page, (s) => s.phase === 'dealt');
     await handSettled(page);
@@ -153,7 +156,8 @@ test.describe('the hand', () => {
       await page.mouse.move(1, 1);
       await page.mouse.move(from, y);
       await watchHovers(page);
-      await page.mouse.move(to, y, { steps: 160 });
+      // 8 px steps: every strip is 41 px or wider here, so each card gets 5 looks.
+      await page.mouse.move(to, y, { steps: Math.ceil(box.width / 8) });
       expect(await page.evaluate(() => (window as unknown as { __hovers: string[] }).__hovers)).toEqual(want);
     }
   });
