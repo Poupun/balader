@@ -2,7 +2,7 @@
 // app) and Chromium (≈ Windows app): `npm run test:e2e`.
 
 import { expect, test, type Page } from '@playwright/test';
-import { clickCard, dealUrl, openApp, snap, until, URLS } from './helpers';
+import { clickCard, dealUrl, handSettled, hoverCard, openApp, snap, until, URLS } from './helpers';
 
 const mock = <T>(page: Page, fn: string) =>
   page.evaluate((f) => {
@@ -116,6 +116,82 @@ test.describe('dealing', () => {
     const s = await until(page, (s) => s.phase === 'error');
     expect(s.error?.code).toBe('invalid_url');
     await expect(page.getByTestId('bust-message')).toHaveText("That doesn't look like a link.");
+  });
+});
+
+/** Record, in order, every card the hand hovers from now on. */
+const watchHovers = (page: Page) =>
+  page.evaluate(() => {
+    const w = window as unknown as { __hovers: string[]; __hoverWatch?: MutationObserver };
+    w.__hoverWatch?.disconnect();
+    w.__hovers = [];
+    w.__hoverWatch = new MutationObserver((list) => {
+      for (const m of list) {
+        const el = m.target as HTMLElement;
+        const key = el.dataset.key;
+        if (key && el.classList.contains('is-hover') && w.__hovers[w.__hovers.length - 1] !== key) w.__hovers.push(key);
+      }
+    });
+    w.__hoverWatch.observe(document.querySelector('[data-testid="hand"]')!, { subtree: true, attributes: true, attributeFilter: ['class'] });
+  });
+
+test.describe('the hand', () => {
+  // 8 cards in the default window: crowded, and 1080p is picked.
+  test('sweeping the pointer across the hand meets every card, both ways', async ({ page }) => {
+    await openApp(page);
+    await dealUrl(page, URLS.youtube);
+    const { cards } = await until(page, (s) => s.phase === 'dealt');
+    await handSettled(page);
+    const keys = cards.map((c) => c.key);
+    const box = (await page.getByTestId('hand').boundingBox())!;
+    const y = box.y + box.height * 0.55;
+    const sweeps: [number, number, string[]][] = [
+      [box.x + 2, box.x + box.width - 2, keys],
+      [box.x + box.width - 2, box.x + 2, [...keys].reverse()],
+    ];
+    for (const [from, to, want] of sweeps) {
+      await page.mouse.move(1, 1);
+      await page.mouse.move(from, y);
+      await watchHovers(page);
+      await page.mouse.move(to, y, { steps: 160 });
+      expect(await page.evaluate(() => (window as unknown as { __hovers: string[] }).__hovers)).toEqual(want);
+    }
+  });
+
+  test('a card stays clickable right after its hovered neighbour', async ({ page }) => {
+    await openApp(page);
+    await dealUrl(page, URLS.youtube);
+    await until(page, (s) => s.phase === 'dealt');
+    const p = await hoverCard(page, 'v480');
+    // Walk right until the next card takes the hover, then click there: the
+    // hovered 480 is drawn over that spot, but the spot is 360's.
+    for (let x = p.x; x < p.x + 200; x += 3) {
+      await page.mouse.move(x, p.y);
+      if (await page.getByTestId('card-v360').evaluate((el) => el.classList.contains('is-hover'))) {
+        await page.mouse.click(x, p.y);
+        break;
+      }
+    }
+    await until(page, (s) => s.selected === 'v360');
+  });
+
+  test('the tooltip follows the hovered card', async ({ page }) => {
+    await openApp(page);
+    await dealUrl(page, URLS.youtube);
+    await until(page, (s) => s.phase === 'dealt');
+    const p = await hoverCard(page, 'v480');
+    await expect(page.getByTestId('tooltip')).toContainText('854×480');
+    for (let x = p.x; x < p.x + 200; x += 3) {
+      await page.mouse.move(x, p.y);
+      if (await page.getByTestId('card-v360').evaluate((el) => el.classList.contains('is-hover'))) break;
+    }
+    await expect(page.getByTestId('tooltip')).toContainText('640×360');
+    await expect(page.getByTestId('tooltip')).toHaveCount(1);
+    // Off the hand the tip goes; buttons keep their own tips.
+    await page.mouse.move(1, 1);
+    await expect(page.getByTestId('tooltip')).toHaveCount(0);
+    await page.getByTestId('cut-toggle').hover();
+    await expect(page.getByTestId('tooltip')).toContainText('Grab only part of it');
   });
 });
 

@@ -3,7 +3,7 @@
 // Run: npm run test:shots
 
 import { test, type Page } from '@playwright/test';
-import { clickCard, dealUrl, hoverCard, openApp, until, URLS } from './helpers';
+import { clickCard, dealUrl, handSettled, hoverCard, openApp, until, URLS } from './helpers';
 
 const DIR = 'tests/e2e/.output/shots';
 const shot = (page: Page, name: string) => page.screenshot({ path: `${DIR}/${name}.png` });
@@ -186,8 +186,13 @@ test.describe('@shots', () => {
     await openApp(page, { timescale: 0.6 });
     await dealUrl(page, URLS.youtube);
     await until(page, (s) => s.phase === 'dealt');
+    // Let the table land first: the CUT button rides in with the showcase, and
+    // on a loaded machine a click aimed mid-flight can miss it.
+    await handSettled(page);
     await page.getByTestId('cut-toggle').click();
+    await until(page, (s) => s.cut.on);
     await page.evaluate(() => (window as unknown as { __balader: { actions: { setCut(a: number, b: number): void } } }).__balader.actions.setCut(125, 160.5));
+    await until(page, (s) => s.cut.active !== null);
     await page.getByTestId('grab').click();
     await until(page, (s) => s.jobs[0]?.stage === 'cut' && s.jobs[0].progress > 0.2, 20_000);
     await page.getByTestId('pile').screenshot({ path: `${DIR}/14-cut-in-pile.png` });

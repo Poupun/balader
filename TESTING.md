@@ -64,7 +64,7 @@ npm run test:e2e:real   # tests/e2e/real.spec.ts: web UI → balader serve → r
 ### Helpers worth knowing (`tests/e2e/helpers.ts`)
 
 - `openApp(page, { timescale, freeze, query })`, `dealUrl(page, url)`, `until(page, s => …)` polls the app snapshot.
-- `clickCard(page, key)` / `hoverCard(page, key)` aim at a point where the card really is on top (cards overlap like a real hand), waiting for the deal to land.
+- `clickCard(page, key)` / `hoverCard(page, key)` wait for the hand to stop moving (`handSettled`: the deal's springs and the picked card's pop, not the idle bob), move the pointer straight onto the card, aim well inside the part that shows, check the hand hovers that card, and click right there. The hand finds cards by where they rest and a click takes the hovered card, so what's lifted is what gets picked.
 - The cut's storyboard sheets are painted by the mock on demand (`mock://storyboard/…`): golden-hour frames stamped with their own time, so a test can check that the right frame shows.
 
 ## The in-page test API: `window.__balader`

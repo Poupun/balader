@@ -136,33 +136,28 @@ export async function handSettled(page: Page, timeout = 10_000): Promise<void> {
 }
 
 /**
- * A hovered card jumps on top and can bury its neighbours, so: start with the
- * pointer off the hand, wait for the hand to settle, jump straight to the card
- * (a glide would lift every card on the way) and check it really is the one
- * under the pointer.
+ * Aim like a person: pointer off the hand, wait for the hand to settle, jump
+ * straight to the card (a glide would hover every card on the way) and check
+ * the hand now hovers that card. Returns where the pointer is.
  */
-export async function hoverCard(page: Page, key: string): Promise<void> {
+export async function hoverCard(page: Page, key: string): Promise<{ x: number; y: number }> {
   for (let attempt = 0; ; attempt++) {
     await page.mouse.move(1, 1);
     await handSettled(page);
     const p = await cardPoint(page, key);
     await page.mouse.move(p.x, p.y);
     await page.waitForTimeout(30);
-    const onTarget = await page.evaluate(
-      ({ key, x, y }) => !!document.elementFromPoint(x, y)?.closest(`[data-testid="card-${key}"]`),
-      { key, ...p },
-    );
-    if (onTarget) return;
-    if (attempt >= 5) throw new Error(`card ${key} keeps ending up under another card`);
+    const hovered = await page.evaluate((key) => !!document.querySelector(`[data-testid="card-${key}"]`)?.classList.contains('is-hover'), key);
+    if (hovered) return p;
+    if (attempt >= 5) throw new Error(`card ${key} won't take the hover`);
     await page.waitForTimeout(100);
   }
 }
 
 export async function clickCard(page: Page, key: string, opts: { double?: boolean } = {}): Promise<void> {
-  await hoverCard(page, key);
-  // Let the card finish lifting before aiming the click.
-  await handSettled(page);
-  const p = await cardPoint(page, key);
+  // Click right where the hover landed: the hand finds cards by where they
+  // rest, so the hovered card rising doesn't change what's under the pointer.
+  const p = await hoverCard(page, key);
   if (opts.double) await page.mouse.dblclick(p.x, p.y);
   else await page.mouse.click(p.x, p.y);
 }

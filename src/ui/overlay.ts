@@ -9,11 +9,29 @@ import { icon } from './icons';
 let tipEl: HTMLElement | null = null;
 let tipTimer: ReturnType<typeof setTimeout> | null = null;
 
-function hideTip(): void {
+export function hideTip(): void {
   if (tipTimer) clearTimeout(tipTimer);
   tipTimer = null;
   tipEl?.remove();
   tipEl = null;
+}
+
+/** Show `text` above `anchor` after the usual delay (the hand drives its cards' tips itself). */
+export function showTip(anchor: HTMLElement, text: string): void {
+  hideTip();
+  tipTimer = setTimeout(() => {
+    if (!anchor.isConnected) return;
+    const tip = h('div', { class: 'tooltip', role: 'tooltip', testid: 'tooltip' }, text);
+    document.body.appendChild(tip);
+    const r = anchor.getBoundingClientRect();
+    const t = tip.getBoundingClientRect();
+    let top = r.top - t.height - 10;
+    if (top < 8) top = r.bottom + 10;
+    const left = Math.max(8, Math.min(window.innerWidth - t.width - 8, r.left + r.width / 2 - t.width / 2));
+    tip.style.top = `${top}px`;
+    tip.style.left = `${left}px`;
+    tipEl = tip;
+  }, 380);
 }
 
 export function initTooltips(): void {
@@ -21,21 +39,7 @@ export function initTooltips(): void {
     const target = (e.target as Element | null)?.closest?.('[data-tip]') as HTMLElement | null;
     if (!target) return;
     const text = target.getAttribute('data-tip');
-    if (!text) return;
-    hideTip();
-    tipTimer = setTimeout(() => {
-      if (!target.isConnected) return;
-      const tip = h('div', { class: 'tooltip', role: 'tooltip', testid: 'tooltip' }, text);
-      document.body.appendChild(tip);
-      const r = target.getBoundingClientRect();
-      const t = tip.getBoundingClientRect();
-      let top = r.top - t.height - 10;
-      if (top < 8) top = r.bottom + 10;
-      const left = Math.max(8, Math.min(window.innerWidth - t.width - 8, r.left + r.width / 2 - t.width / 2));
-      tip.style.top = `${top}px`;
-      tip.style.left = `${left}px`;
-      tipEl = tip;
-    }, 380);
+    if (text) showTip(target, text);
   });
   document.addEventListener('pointerout', (e) => {
     const from = (e.target as Element | null)?.closest?.('[data-tip]');

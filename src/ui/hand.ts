@@ -2,7 +2,7 @@
 // flip, bobs while idle, tilts toward the pointer with a moving glare, lifts
 // on hover, jumps when picked. Container changes re-flip faces in place.
 
-import { pop, spring } from '../fx/juice';
+import { pop, spring, springCurve } from '../fx/juice';
 import { motion, ms } from '../fx/motion';
 import { random } from '../fx/rng';
 import { sfx } from '../fx/sound';
@@ -11,13 +11,20 @@ import { grab, select, store, type AppState } from '../state/app';
 import { h, replace } from './dom';
 import { centerOf, fxctx } from './fxctx';
 import { icon } from './icons';
-import { fanLayout } from './layout';
-import { toast } from './overlay';
+import { fanLayout, hitsCard, type Slot } from './layout';
+import { hideTip, showTip, toast } from './overlay';
 import { flyToPile } from './pile';
 
 // Base card box (CSS). Cards are scaled up/down to fit the table height.
 const CARD_W = 116;
 const CARD_H = 162;
+/** The picked card's extra size and lift: `.card.is-selected { --scale; --lift }` in table.css. */
+const PICK_SCALE = 1.1;
+const PICK_LIFT = -38;
+/** How far a hovered card rises: `.card.is-hover { --lift }`. */
+const HOVER_RISE = 16;
+/** The deal's spring (stiffness, damping): cards land when it settles. */
+const DEAL_SPRING = { stiffness: 170, damping: 15 };
 
 export function cardFace(c: CardModel): HTMLElement {
   return h(
@@ -56,12 +63,21 @@ export function mountHand(parent: HTMLElement): void {
   const views = new Map<string, CardView>();
   let order: string[] = [];
   let dealt = -1;
+  // Where each card rests: the pointer finds cards by where they rest, not by
+  // where a hovered card has risen to (see cardAt).
+  const rest = new Map<string, Slot>();
+  let restBase = 1;
+  let hovered: CardView | null = null;
+  let pointer: { x: number; y: number } | null = null;
+  // Until then the cards are still flying in: trust what's drawn.
+  let landedAt = 0;
 
   const layout = (animate = true) => {
     const H = hand.clientHeight;
     // Room above for the picked card's lift, so it never covers the panel above.
     const base = Math.max(0.7, Math.min(1.22, (H - 110) / CARD_H));
     hand.style.setProperty('--base', base.toFixed(3));
+    restBase = base;
     const effW = CARD_W * base;
     const effH = CARD_H * base;
     const arc = Math.min(26, 3.2 * order.length);
@@ -70,24 +86,16 @@ export function mountHand(parent: HTMLElement): void {
     const dx = (effW - CARD_W) / 2;
     const dy = (effH - CARD_H) / 2;
     const W = hand.clientWidth;
-    let raw = fanLayout(order.length, W, effW, { top, arc });
-    // Make room around the selected card so its neighbours never get buried.
-    const f = store.get().selected ? order.indexOf(store.get().selected!) : -1;
-    if (f >= 0 && raw.length > 1) {
-      const step = raw[1].x - raw[0].x;
-      const push = Math.max(0, Math.min(effW * 0.42, effW - step + 14));
-      if (push > 0) {
-        raw = fanLayout(order.length, Math.max(effW, W - 2 * push), effW, { top, arc }).map((s, i) => ({
-          ...s,
-          x: s.x + push + (i < f ? -push : i > f ? push : 0),
-        }));
-      }
-    }
+    // The picked card floats on top, bigger: the others make room so none gets buried.
+    const sel = store.get().selected;
+    const raw = fanLayout(order.length, W, effW, { top, arc, pick: sel ? order.indexOf(sel) : -1, pickScale: PICK_SCALE });
     const slots = raw.map((s) => ({ ...s, x: s.x + dx, y: s.y + dy }));
+    rest.clear();
     order.forEach((key, i) => {
       const v = views.get(key);
       if (!v) return;
       const s = slots[i];
+      rest.set(key, s);
       if (!animate) v.el.style.transition = 'none';
       v.el.style.setProperty('--x', `${s.x}px`);
       v.el.style.setProperty('--y', `${s.y}px`);
@@ -133,23 +141,12 @@ export function mountHand(parent: HTMLElement): void {
         tabindex: '0',
         'aria-pressed': 'false',
         'aria-label': `${c.summary}. ${c.size}`,
-        'data-tip': c.tip,
       },
       h('div', { class: 'card__float', style: { '--bob': `${-(index * 0.37 + random() * 0.4).toFixed(2)}s` } as Record<string, string> }, h('div', { class: 'card__lift' }, inner)),
     );
     (el.firstElementChild as HTMLElement).style.setProperty('--bob', `${-(index * 0.37 + random() * 0.4).toFixed(2)}s`);
     const view: CardView = { el, inner, sig: faceSignature(c), model: c };
-    el.addEventListener('pointerenter', () => {
-      el.classList.add('is-hover');
-      sfx.play('hover', { pitch: 0.9 + index * 0.03 });
-    });
-    el.addEventListener('pointermove', (e) => tilt(view, e));
-    el.addEventListener('pointerleave', () => untilt(view));
-    el.addEventListener('click', () => pick(view));
-    el.addEventListener('dblclick', () => {
-      if (store.get().selected !== view.model.key) select(view.model.key);
-      void play();
-    });
+    // Pointer hover and clicks are handled by the hand (cardAt); keys stay here.
     el.addEventListener('keydown', (e) => {
       if (e.key === ' ' || e.key === 'Enter') {
         e.preventDefault();
@@ -196,6 +193,77 @@ export function mountHand(parent: HTMLElement): void {
   };
   hand.addEventListener('grab', () => void play());
 
+  /**
+   * The card under the pointer, judged by where the cards rest. A hovered card
+   * rises to the front and grows: judged by what's drawn, it hid the next two
+   * cards from the pointer, and sweeping right skipped them. The picked card
+   * really sits on top, so it counts lifted and bigger.
+   */
+  const cardAt = (x: number, y: number): CardView | null => {
+    if (performance.now() < landedAt) {
+      const el = document.elementFromPoint(x, y)?.closest<HTMLElement>('.card');
+      return (el && views.get(el.dataset.key ?? '')) || null;
+    }
+    const box = hand.getBoundingClientRect();
+    const sel = store.get().selected;
+    // Topmost first: the picked card, then the hand from right to left.
+    const keys = order.filter((k) => k !== sel).reverse();
+    if (sel && views.has(sel)) keys.unshift(sel);
+    for (const key of keys) {
+      const s = rest.get(key);
+      const v = views.get(key);
+      if (!s || !v) continue;
+      const picked = key === sel;
+      const shape = {
+        w: CARD_W,
+        h: CARD_H,
+        scale: restBase * (picked ? PICK_SCALE : 1),
+        lift: picked ? PICK_LIFT : 0,
+        // The risen top of the hovered card is still that card.
+        reach: v === hovered && !picked ? HOVER_RISE : 0,
+      };
+      if (hitsCard(x - box.left, y - box.top, s, shape)) return v;
+    }
+    return null;
+  };
+
+  const setHover = (v: CardView | null, e?: PointerEvent) => {
+    if (v !== hovered) {
+      if (hovered) untilt(hovered);
+      hovered = v;
+      if (v) {
+        v.el.classList.add('is-hover');
+        sfx.play('hover', { pitch: 0.9 + order.indexOf(v.model.key) * 0.03 });
+        showTip(v.el, v.model.tip);
+      } else hideTip();
+    }
+    if (v && e) tilt(v, e);
+  };
+
+  hand.addEventListener('pointermove', (e) => {
+    pointer = { x: e.clientX, y: e.clientY };
+    setHover(cardAt(e.clientX, e.clientY), e);
+  });
+  hand.addEventListener('pointerleave', () => {
+    pointer = null;
+    setHover(null);
+  });
+  // A click takes the card that is lifted under the pointer (what you see is
+  // what you pick, even on the pixel where two strips meet); taps that never
+  // hovered fall back to the card at the tap.
+  hand.addEventListener('click', (e) => {
+    const v = hovered ?? cardAt(e.clientX, e.clientY);
+    if (!v) return;
+    v.el.focus({ preventScroll: true });
+    pick(v);
+  });
+  hand.addEventListener('dblclick', (e) => {
+    const v = hovered ?? cardAt(e.clientX, e.clientY);
+    if (!v) return;
+    if (store.get().selected !== v.model.key) select(v.model.key);
+    void play();
+  });
+
   const removeAll = () => {
     for (const v of views.values()) {
       const el = v.el;
@@ -217,7 +285,12 @@ export function mountHand(parent: HTMLElement): void {
       );
     }
     views.clear();
+    rest.clear();
     order = [];
+    if (hovered) {
+      hovered = null;
+      hideTip();
+    }
   };
 
   const deal = (cards: CardModel[]) => {
@@ -229,7 +302,9 @@ export function mountHand(parent: HTMLElement): void {
       hand.appendChild(v.el);
     });
     const slots = layout(false);
+    landedAt = 0;
     if (motion.frozen) return;
+    landedAt = performance.now() + ms(90 + (cards.length - 1) * 70 + springCurve(DEAL_SPRING.stiffness, DEAL_SPRING.damping).duration);
     const ox = hand.clientWidth + 60;
     const oy = -170;
     cards.forEach((c, i) => {
@@ -241,7 +316,7 @@ export function mountHand(parent: HTMLElement): void {
         (t) => ({
           transform: `translate3d(${ox + (s.x - ox) * t}px, ${oy + (s.y - oy) * t}px, 0) rotate(${28 + (s.r - 28) * t}deg)`,
         }),
-        { stiffness: 170, damping: 15, delay },
+        { ...DEAL_SPRING, delay },
       );
       v.el.animate([{ opacity: 0 }, { opacity: 1, offset: 0.15 }, { opacity: 1 }], { duration: ms(delay + 200), easing: 'linear' });
       // Flip from the back: rotation and the back's visibility switch at the
@@ -282,7 +357,6 @@ export function mountHand(parent: HTMLElement): void {
       const v = views.get(c.key);
       if (!v) return;
       v.model = c;
-      v.el.setAttribute('data-tip', c.tip);
       v.el.setAttribute('aria-label', `${c.summary}. ${c.size}`);
       const sig = faceSignature(c);
       if (sig === v.sig) {
@@ -312,6 +386,8 @@ export function mountHand(parent: HTMLElement): void {
   const syncSelection = (s: AppState) => {
     hand.classList.toggle('has-selection', !!s.selected);
     layout(true);
+    // The hand just moved under a still pointer: hover what is there now.
+    if (pointer) setHover(cardAt(pointer.x, pointer.y));
     for (const [key, v] of views) {
       const on = key === s.selected;
       if (v.el.classList.contains('is-selected') !== on) {
